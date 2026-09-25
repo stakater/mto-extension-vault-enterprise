@@ -1,0 +1,99 @@
+# Render-test fixture for the misconfiguration guards. Every ServiceAccount here
+# is wrong in exactly one way, plus correct ones in a DIFFERENT namespace: the
+# point of reporting per ServiceAccount instead of failing the render is that
+# one tenant namespace's mistake must not stop another's objects from being
+# emitted. One TemplateInstance renders the whole tenant, so a fail() here would
+# freeze every namespace it owns.
+tenant: team-a
+knownTenants: "team-a,team-b"
+eso: enabled
+serviceAccounts:
+  # tier with no engine
+  - metadata: { name: g-tier-only, namespace: team-a-dev, annotations: { vault.stakater.com/tier: editor } }
+  # engine with no tier
+  - metadata: { name: g-no-tier, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true" } }
+  # unknown tier
+  - metadata: { name: g-bad-tier, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editorr } }
+  # an OpenBao-extension engine this extension does not support
+  - metadata: { name: g-transit, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor, vault.stakater.com/transit: "true" } }
+  # app name that would break out of the policy path
+  - metadata:
+      name: g-injection
+      namespace: team-a-dev
+      annotations:
+        vault.stakater.com/kv: "true"
+        vault.stakater.com/tier: editor
+        vault.stakater.com/app: 'x/*" { capabilities = ["sudo"] } path "kv/data/dev/team-a-prod'
+  # app name that is Vault's single-segment wildcard
+  - metadata: { name: g-wildcard, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor, vault.stakater.com/app: "+" } }
+  # app name colliding with a chart-owned prefix
+  - metadata: { name: g-reserved, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor, vault.stakater.com/app: _shared } }
+  # two ServiceAccounts resolving to one app: the claimant, and the one that
+  # declared nothing and is defended by its own name
+  - metadata: { name: g-claimed, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor } }
+  - metadata: { name: g-claimer, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: admin, vault.stakater.com/app: g-claimed } }
+  # sharing annotation with kv off
+  - metadata: { name: g-orphan-share, namespace: team-a-dev, annotations: { vault.stakater.com/kv-export-tenant: team-b } }
+  # the default ServiceAccount
+  - metadata: { name: default, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor } }
+  # subscribing to a namespace outside the tenant
+  - metadata: { name: g-foreign-ns, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor, vault.stakater.com/kv-subscribe-ns: nowhere-ns } }
+  # unknown key
+  - metadata: { name: g-unknown-key, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor, vault.stakater.com/subscribe-to-ns: team-a-dev } }
+  # misspelled boolean
+  - metadata: { name: g-bad-bool, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "ture", vault.stakater.com/tier: editor } }
+  # app named but kv off — registers nothing
+  - metadata: { name: g-app-only, namespace: team-a-dev, annotations: { vault.stakater.com/app: payments } }
+  # subscribes to a sibling namespace properly (positive control for the join check)
+  - metadata: { name: sub-ok, namespace: team-a-prod, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor, vault.stakater.com/kv-subscribe-ns: team-a-dev } }
+  # does NOT subscribe, yet a Deployment of its will try to read a sibling's _shared
+  - metadata: { name: sub-missing, namespace: team-a-prod, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor } }
+  # imports from a tenant that is not in the roster (a typo that never self-heals)
+  - metadata: { name: imp-bad, namespace: team-a-prod, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor, vault.stakater.com/kv-import-tenant: "team-bb" } }
+  # correct, and in another namespace
+  - metadata: { name: good-sa, namespace: team-a-prod, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor } }
+  # dotted ServiceAccount name — legal in Kubernetes, rejected because every
+  # chart-reserved name suffix is dot-separated
+  - metadata: { name: g.dotted, namespace: team-a-prod, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor, vault.stakater.com/app: payments } }
+  # target for the hostile-input Deployments below — keeps good-sa's index entry stable
+  - metadata: { name: hostile-sa, namespace: team-a-prod, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor, vault.stakater.com/app: "no" } }
+deployments:
+  # two Deployments, one ServiceAccount, identical ask -> ONE ExternalSecret
+  - metadata: { name: d-dedupe-a, namespace: team-a-prod, annotations: { vault.stakater.com/kv-secret.db: postgres } }
+    spec: { template: { spec: { serviceAccountName: good-sa } } }
+  - metadata: { name: d-dedupe-b, namespace: team-a-prod, annotations: { vault.stakater.com/kv-secret.db: postgres } }
+    spec: { template: { spec: { serviceAccountName: good-sa } } }
+  # same name, different ask -> rejected on both
+  - metadata: { name: d-clash-a, namespace: team-a-prod, annotations: { vault.stakater.com/kv-secret.cfg: one } }
+    spec: { template: { spec: { serviceAccountName: good-sa } } }
+  - metadata: { name: d-clash-b, namespace: team-a-prod, annotations: { vault.stakater.com/kv-secret.cfg: two } }
+    spec: { template: { spec: { serviceAccountName: good-sa } } }
+  # annotated but no serviceAccountName
+  - metadata: { name: d-no-sa, namespace: team-a-prod, annotations: { vault.stakater.com/kv-secret.x: y } }
+    spec: { template: { spec: {} } }
+  # ServiceAccount-only annotation placed on a Deployment
+  - metadata: { name: d-misplaced, namespace: team-a-prod, annotations: { vault.stakater.com/app: payments } }
+    spec: { template: { spec: { serviceAccountName: good-sa } } }
+  # reads a sibling namespace's _shared without its SA subscribing -> would 403 forever
+  - metadata: { name: d-sub-nogrant, namespace: team-a-prod, annotations: { vault.stakater.com/kv-subscribe.x: "team-a-dev/leaf" } }
+    spec: { template: { spec: { serviceAccountName: sub-missing } } }
+  # same shape, but the SA does subscribe -> must render (positive control)
+  - metadata: { name: d-sub-ok, namespace: team-a-prod, annotations: { vault.stakater.com/kv-subscribe.y: "team-a-dev/leaf" } }
+    spec: { template: { spec: { serviceAccountName: sub-ok } } }
+  # subscribing to its OWN namespace needs no annotation -> must render
+  - metadata: { name: d-sub-own, namespace: team-a-prod, annotations: { vault.stakater.com/kv-subscribe.z: "team-a-prod/leaf" } }
+    spec: { template: { spec: { serviceAccountName: good-sa } } }
+  # imports from an off-roster tenant -> reported, not silently dropped
+  - metadata: { name: d-imp-bad, namespace: team-a-prod, annotations: { vault.stakater.com/kv-import.p: "team-bb/leaf" } }
+    spec: { template: { spec: { serviceAccountName: imp-bad } } }
+  # unknown Deployment key
+  - metadata: { name: d-unknown, namespace: team-a-prod, annotations: { vault.stakater.com/secret.db: postgres } }
+    spec: { template: { spec: { serviceAccountName: good-sa } } }
+  # hostile values — each must land in an error ConfigMap, never in a rendered
+  # spec, and must not be able to forge fields anywhere (incl. the error CM)
+  - metadata: { name: d-evil-key, namespace: team-a-prod, annotations: { vault.stakater.com/kv-secret.ok: "leaf#bad\nspec: forged" } }
+    spec: { template: { spec: { serviceAccountName: hostile-sa } } }
+  - metadata: { name: d-evil-leaf, namespace: team-a-prod, annotations: { vault.stakater.com/kv-secret.trav: "../../team-a-dev/other/creds" } }
+    spec: { template: { spec: { serviceAccountName: hostile-sa } } }
+  - metadata: { name: d-evil-name, namespace: team-a-prod, annotations: { vault.stakater.com/kv-secret.My_Secret: "x" } }
+    spec: { template: { spec: { serviceAccountName: hostile-sa } } }

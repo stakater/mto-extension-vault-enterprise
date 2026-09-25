@@ -1,0 +1,15 @@
+# Render-test fixture: ESO on, but no ServiceAccount grants anything and no
+# Deployment asks for a secret. The eso slice must render zero objects with
+# these values: a tenant that has not opted into anything is a benign empty
+# slice, not a failure.
+tenant: team-a
+knownTenants: "team-a,team-b"
+
+eso: enabled
+
+serviceAccounts:
+  - metadata:
+      name: app-a
+      namespace: team-a-dev
+
+deployments: []

@@ -1,0 +1,138 @@
+# RBAC granted to the template-operator-v2 ServiceAccount so it can:
+#   - LIST/WATCH Tenant CRs (parent objectFieldRef source)
+#   - LIST/WATCH Namespaces (child namespaceSelector resolution)
+#   - CRUD TemplateInstances and VCO CRs in configNamespace only — mutation
+#     verbs in the mto-extension-vault-enterprise-manager Role, cluster-wide `list` here
+#   - read ServiceAccounts + Deployments (workload discovery via the child
+#     Template's namespaceSelector-scoped objectFieldRefs)
+#   - CRUD ConfigMaps (the per-SA vault-config ConfigMap, the vault-apps index)
+#   - CRUD the other kinds the tenant chart can render (SecretStores,
+#     ExternalSecrets, NetworkPolicies, PrometheusRules)
+#
+# ESO kinds are granted in two parts: the reap verbs unconditionally, and
+# `create` only while parent.eso is enabled. Gating the whole block deadlocks
+# teardown — see the comment on that rule.
+{{- $kinds := include "mto-extension-vault-enterprise-bootstrap.vcoKinds" . | fromYamlArray }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mto-extension-vault-enterprise-tenant-reader
+rules:
+  - apiGroups: ["tenantoperator.stakater.com"]
+    resources: ["tenants"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mto-extension-vault-enterprise-tenant-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mto-extension-vault-enterprise-tenant-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.templateOperator.serviceAccountName }}
+    namespace: {{ .Values.templateOperator.namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mto-extension-vault-enterprise-manager
+rules:
+  # `list` only. These kinds render exclusively into configNamespace, so every
+  # other verb sits in the mto-extension-vault-enterprise-manager Role below. The cluster-wide
+  # `list` has one consumer: template-operator-v2's orphan discovery, which lists
+  # each rendered GVK across the cluster by ownership label on every reconcile
+  # and on TI deletion. Without it TI teardown wedges in Terminating.
+  - apiGroups: ["redhatcop.redhat.io"]
+    resources:
+      {{- range $kinds }}
+      - {{ .resource }}
+      {{- end }}
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Only `create` is toggle-gated. template-operator-v2 reaps a slice's objects
+  # *after* the toggle flips: turning ESO off in one `helm upgrade` both removes
+  # the child Template and rewrites this ClusterRole. The TI then enters
+  # deletion and its finalizer has to list, patch and delete the objects it
+  # owns. Had the upgrade revoked those verbs, the finalizer would fail
+  # Forbidden forever and every object the slice created would be orphaned.
+  # Gating `create` alone keeps the property that matters — a cluster with ESO
+  # off cannot be made to mint new SecretStores — while teardown still completes.
+  - apiGroups: ["external-secrets.io"]
+    resources: ["secretstores", "externalsecrets"]
+    verbs: ["get", "list", "watch", "update", "patch", "delete"]
+  {{- if eq (include "mto-extension-vault-enterprise-bootstrap.esoMode" .) "enabled" }}
+  - apiGroups: ["external-secrets.io"]
+    resources: ["secretstores", "externalsecrets"]
+    verbs: ["create"]
+  {{- end }}
+  # `list` only, same reason as the redhatcop.redhat.io rule above.
+  - apiGroups: ["templates.v2.stakater.com"]
+    resources: ["templateinstances"]
+    verbs: ["list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["prometheusrules"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mto-extension-vault-enterprise-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mto-extension-vault-enterprise-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.templateOperator.serviceAccountName }}
+    namespace: {{ .Values.templateOperator.namespace }}
+---
+# Every verb for the kinds that render ONLY into configNamespace: the VCO CRs
+# and the child TemplateInstances. Never toggle-gated: teardown runs after a
+# toggle flips, and a Role gated on one wedges the TI finalizer Forbidden.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mto-extension-vault-enterprise-manager
+  namespace: {{ .Values.configNamespace }}
+rules:
+  - apiGroups: ["redhatcop.redhat.io"]
+    resources:
+      {{- range $kinds }}
+      - {{ .resource }}
+      {{- end }}
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["templates.v2.stakater.com"]
+    resources: ["templateinstances"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mto-extension-vault-enterprise-manager
+  namespace: {{ .Values.configNamespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mto-extension-vault-enterprise-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.templateOperator.serviceAccountName }}
+    namespace: {{ .Values.templateOperator.namespace }}

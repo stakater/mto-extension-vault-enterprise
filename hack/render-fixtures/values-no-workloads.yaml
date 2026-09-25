@@ -1,0 +1,30 @@
+# Render-test fixture: the zero-labelled-namespace window. Every toggle is on,
+# but the tenant has no workload namespaces at all — serviceAccounts and
+# deployments arrive as JSON null, which is what template-operator-v2 sends for
+# a Tenant whose namespaces are not labelled yet.
+#
+# It drives every per-namespace list in the chart to empty, and a bare `key:`
+# over an empty range is YAML null, which the apiserver rejects as "must be of
+# type array". One invalid object fails the whole render's apply, so a null
+# here takes out the tenant's entire TemplateInstance. Hence a fixture:
+# crd-validate runs this through the real admission pipeline per component.
+tenant: team-a
+knownTenants: "team-a,team-b"
+
+eso: enabled
+
+sso:
+  enabled: true
+  oidc:
+    issuerUrl: "https://dex.example.com"
+
+networkPolicy:
+  enabled: true
+
+monitoring:
+  enabled: true
+
+# The point of the fixture: null, not [], because that is the wire form
+# t-op-v2 produces for a tenant with no labelled namespaces.
+serviceAccounts: null
+deployments: null

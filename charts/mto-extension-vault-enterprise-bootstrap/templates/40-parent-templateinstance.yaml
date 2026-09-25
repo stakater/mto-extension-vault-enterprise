@@ -1,0 +1,31 @@
+# Parent TemplateInstance — the only TI in git. Pulls every Tenant CR
+# cluster-wide and feeds the LIST to the parent gotemplate, which emits the
+# per-tenant child TIs. Those child TIs (and everything they render) are
+# managed by template-operator-v2 through its ownership label and finalizer.
+---
+apiVersion: templates.v2.stakater.com/v2alpha1
+kind: TemplateInstance
+metadata:
+  name: mto-extension-vault-enterprise-parent
+  namespace: {{ .Values.configNamespace }}
+spec:
+  templateRef:
+    name: mto-extension-vault-enterprise-parent
+    namespace: {{ .Values.configNamespace }}
+  parameters:
+    - name: tenants
+      valueFrom:
+        objectFieldRef:
+          apiVersion: tenantoperator.stakater.com/v1beta3
+          kind: Tenant
+          jsonPath: .items
+    {{- /* Cluster-wide namespace list. The parent gates each tenant on the count
+           of namespaces carrying tenantLabelKey — the same fact the child TI's
+           namespaceSelector resolves against, and the only one set by both ways
+           MTO attaches a namespace to a tenant. */}}
+    - name: tenantNamespaces
+      valueFrom:
+        objectFieldRef:
+          apiVersion: v1
+          kind: Namespace
+          jsonPath: .items

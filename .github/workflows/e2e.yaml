@@ -1,0 +1,93 @@
+name: E2E
+
+# Not on every push. The suite builds a whole kind cluster — cert-manager,
+# template-operator-v2, External Secrets, Reloader, Vault Enterprise and
+# vault-config-operator built from source — which takes far longer than
+# `make all`. So it runs when a human asks for it: on approval, by adding the
+# label, or by dispatch.
+#
+# Two inputs beyond the code:
+#   - secrets.VAULT_LICENSE   the Vault Enterprise licence text. The suite
+#                             refuses Community Edition, which ignores namespaces.
+#   - vars.VCO_REPOSITORY / vars.VCO_REF   the vault-config-operator source to
+#                             build. The charts need two changes that are in no
+#                             VCO release yet (charts/README.md → Prerequisites),
+#                             so this must point at a ref that has both.
+on:
+  pull_request_review:
+    types: [submitted]
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-label:
+    name: Verify Label
+    # An approval-triggered run executes PR-authored code with the licence in
+    # the environment, so the approver must be an OWNER/MEMBER/COLLABORATOR.
+    # Applying the label needs triage; a dispatch needs write.
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.review.state == 'approved' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)) || github.event.label.name == 'ok-to-test/kubernetes' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      # Removed so the next run needs a fresh request. Pinned by SHA: this job
+      # holds pull-requests: write.
+      - name: Remove the test label
+        if: ${{ github.event.label.name == 'ok-to-test/kubernetes' }}
+        continue-on-error: true
+        uses: actions-ecosystem/action-remove-labels@2ce5d41b4b6aa8503e285553f75ed56e0a40bae0 # v1
+        with:
+          labels: ok-to-test/kubernetes
+
+  e2e:
+    name: Kind E2E
+    needs: verify-label
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      # For pull_request_review the default ref is the DEFAULT BRANCH: an
+      # approval-triggered run would test main and gate nothing.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || '' }}
+
+      - name: Check out vault-config-operator
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.VCO_REPOSITORY }}
+          ref: ${{ vars.VCO_REF }}
+          path: vault-config-operator
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Written to a file outside the workspace, never echoed. The Makefile
+      # reads it into a Secret in the Vault namespace.
+      - name: Write the Vault licence
+        env:
+          VAULT_LICENSE: ${{ secrets.VAULT_LICENSE }}
+        run: |
+          if [ -z "$VAULT_LICENSE" ]; then echo "secrets.VAULT_LICENSE is not set" >&2; exit 1; fi
+          printf '%s' "$VAULT_LICENSE" > "$RUNNER_TEMP/vault.hclic"
+
+      - name: Build the lab and run the suite
+        run: make e2e-kind VAULT_LICENSE_FILE="$RUNNER_TEMP/vault.hclic" VCO_SRC=vault-config-operator
+
+      # e2e-kind writes these on any failure in the chain.
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-${{ github.run_id }}
+          path: ./e2e-logs/
+          retention-days: 7
+          if-no-files-found: warn

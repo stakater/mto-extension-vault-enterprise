@@ -1,0 +1,67 @@
+{{- if include "vault.componentEnabled" (dict "component" "core" "ctx" .) }}
+{{/*
+Section 9 — monitoring (off by default). One PrometheusRule per tenant.
+
+  1. VaultConfigCRNeverReconciled — a VCO CR of this tenant has no
+     ReconcileSuccessful=True condition for 10m: it has never been written to
+     Vault.
+  2. VaultExternalSecretSyncFailed — an ExternalSecret of this tenant has
+     Ready=False for 5m: the workload is not getting its secret.
+
+What alert 1 cannot see: a CR that succeeded once and fails later. VCO keeps
+ReconcileSuccessful=True and ReconcileFailed=False side by side, and both
+conditions' lastTransitionTime freeze after their first write, so the status
+cannot say which one is current (charts/README.md → "Health"). Alert 2 is the
+signal that tracks the data path now.
+
+Needs prometheus-operator's PrometheusRule CRD, and kube-state-metrics
+custom-resource state metrics configured for the redhatcop.redhat.io kinds.
+*/}}
+{{- if .Values.monitoring.enabled }}
+{{- $tenant := required ".Values.tenant must be set by the parent" .Values.tenant }}
+{{- $labels := include "vault.labels" . }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: mto-extension-vault-enterprise-{{ $tenant }}
+  namespace: {{ .Values.monitoring.prometheusNamespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  groups:
+    - name: mto-extension-vault-enterprise-{{ $tenant }}.reconcile
+      rules:
+        - alert: VaultConfigCRNeverReconciled
+          expr: |
+            sum by (kind, name, namespace) (
+              kube_customresource_status_conditions{
+                customresource_group="redhatcop.redhat.io",
+                condition="ReconcileSuccessful",
+                status!="true",
+                label_stakater_com_tenant="{{ $tenant }}"
+              }
+            ) > 0
+          for: 10m
+          labels:
+            severity: warning
+            tenant: {{ $tenant }}
+          annotations:
+            summary: "Vault config CR {{`{{ $labels.kind }}/{{ $labels.name }}`}} never reconciled for tenant {{ $tenant }}"
+            description: "vault-config-operator has not written this object to Vault. Check the CR's ReconcileFailed message and the operator logs."
+        - alert: VaultExternalSecretSyncFailed
+          expr: |
+            externalsecret_status_condition{
+              status="False",
+              type="Ready",
+              label_stakater_com_tenant="{{ $tenant }}"
+            } > 0
+          for: 5m
+          labels:
+            severity: warning
+            tenant: {{ $tenant }}
+          annotations:
+            summary: "ExternalSecret {{`{{ $labels.namespace }}/{{ $labels.name }}`}} not syncing"
+            description: "Vault login failure or missing source path. Check the ExternalSecret events and the Vault audit log."
+{{- end }}
+{{- end }}

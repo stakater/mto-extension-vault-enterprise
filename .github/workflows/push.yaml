@@ -1,0 +1,52 @@
+name: Push
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+
+# Two pushes must not race each other to publish the same chart version.
+concurrency:
+  group: push-main
+  cancel-in-progress: false
+
+jobs:
+  push-charts:
+    name: Push Charts
+    if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Lint, render tests, version pin, CRD schema check
+        run: make all
+
+      # check-tag-free in the Makefile refuses a version that is already
+      # published — helm push itself would overwrite it. The tenant chart is
+      # pushed before the bootstrap that pins it.
+      - name: Package and push charts
+        run: make helm-release
+        env:
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Notify on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          payload: |
+            {
+              "text": "mto-extension-vault-enterprise: chart release failed on main. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.STAKATER_DELIVERY_SLACK_WEBHOOK }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

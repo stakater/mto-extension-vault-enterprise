@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "mto-extension-vault-enterprise-bootstrap values",
+  "description": "Constrains only the switches whose values are consumed as string comparisons downstream, where a near-miss (yes / on / True / 1) would otherwise disable an integration silently, plus the token durations VCO takes as integer seconds. Everything else is intentionally unconstrained. The accepted boolean forms mirror templates/_helpers.tpl exactly -- a boolean, or the strings \"true\"/\"false\". If you change one, change the other.",
+  "type": "object",
+  "definitions": {
+    "boolish": {
+      "description": "true or false, as a YAML boolean or as the quoted string \"true\"/\"false\". Anything else (yes, on, off, 1, 0, True, TRUE) is rejected, because it would be read as \"not enabled\" without warning.",
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string",
+          "enum": [
+            "true",
+            "false"
+          ]
+        }
+      ]
+    }
+  },
+  "required": [
+    "configNamespace",
+    "parent"
+  ],
+  "properties": {
+    "configNamespace": {
+      "type": "string",
+      "minLength": 1
+    },
+    "parent": {
+      "type": "object",
+      "description": "Parent Template defaults, passed through to every child TI. REQUIRED: a values file that nulls it deletes the key, and every .Values.parent.<x> read would then nil-pointer the whole render instead of naming the value.",
+      "properties": {
+        "eso": {
+          "description": "A string, not a boolean: \"enabled\" or \"disabled\". true/false/yes/on are rejected.",
+          "type": "string",
+          "enum": [
+            "enabled",
+            "disabled"
+          ]
+        },
+        "sso": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "$ref": "#/definitions/boolish"
+            },
+            "issuerUrl": {
+              "type": "string"
+            },
+            "allowedRedirectUris": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "token": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Tenant chart `token`, install-wide. Integer seconds: VCO's KubernetesAuthEngineRole types these as integers.",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "service",
+                "batch"
+              ]
+            },
+            "ttl": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "maxTTL": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "sync": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "description": "Drift protection. Unquoted on/yes/off parse as YAML booleans and are rejected -- quote the value.",
+          "type": "string",
+          "enum": [
+            "off",
+            "revert",
+            "strict"
+          ]
+        },
+        "ignoreFields": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
