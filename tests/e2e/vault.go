@@ -114,6 +114,22 @@ func vaultIn(t *testing.T, ns string, args ...string) string {
 	return out
 }
 
+// policyRules reads an ACL policy's text as root. sys/policy/<name> answers
+// with "rules"; sys/policies/acl/ would say "policy".
+func policyRules(t *testing.T, ns, name string) string {
+	t.Helper()
+	var pol struct {
+		Data struct {
+			Rules string `json:"rules"`
+		} `json:"data"`
+	}
+	raw := vaultIn(t, ns, "read", "-format=json", "sys/policy/"+name)
+	if err := json.Unmarshal([]byte(raw), &pol); err != nil || pol.Data.Rules == "" {
+		t.Fatalf("read policy %s: no rules in %q, err %v", name, raw, err)
+	}
+	return pol.Data.Rules
+}
+
 func jsonMap(t *testing.T, out string) map[string]any {
 	t.Helper()
 	var m map[string]any

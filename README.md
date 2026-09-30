@@ -14,7 +14,7 @@ v1.0.3 or later (see
 | Path | What |
 |---|---|
 | [charts/](charts/) | the two charts and their user documentation |
-| [hack/chart-render-tests.sh](hack/chart-render-tests.sh) | the render tests (37 checks) — the quality gate |
+| [hack/chart-render-tests.sh](hack/chart-render-tests.sh) | the render tests (38 checks) — the quality gate |
 | [hack/crd-validate/](hack/crd-validate/) | validates rendered VCO CRs through the apiserver's admission pipeline |
 | [hack/render-fixtures/](hack/render-fixtures/) | fixtures and the golden render |
 | [hack/lab/](hack/lab/) | the local kind lab |
@@ -62,6 +62,7 @@ uninstall.
 | removal | removing a ServiceAccount's annotations deletes its Policy, Role, Vault role and ConfigMap, and its login is refused |
 | share | e2e-alpha writes a share, e2e-beta reads it through ESO and cannot write it; each tenant's ServiceAccount is refused by the other's share role |
 | lifetime | deleting e2e-beta's last namespace removes its workload render but keeps its Vault namespace, kv mount and secrets; a new namespace brings the render back |
+| offboarding | with the production VCO policy ([vco-admin-policy.hcl](charts/examples/vco-admin-policy.hcl)), deleting Tenant e2e-beta and its namespace removes its grants and e2e-alpha's share role to it, but VCO is refused the delete of its Vault namespace and kv mount: the secret and both shares stay, and the two CRs stay `Terminating`; then the documented admin procedure (delete the namespace, remove the finalizers) finishes it |
 | teardown | the documented uninstall order leaves no CR and deletes the tenants' Vault namespaces |
 
 Every access check runs as the workload (its own ServiceAccount token), never
@@ -85,11 +86,9 @@ HTTP through port-forwards, and checks that a group gives exactly its tier (bob
 cannot take the editor role), in its own tenant only (alice cannot log in to
 e2e-beta, and her token cannot read it).
 
-The original denials and the drift step were checked by a live mutation —
-breaking the chart or VCO made exactly that step fail. The checks added since
-(the logins that change one binding, the subscriber's metadata update, the tier
-change, the revocation of an issued token, the lifetime hold, SSO) have not had
-that live mutation yet.
+A denial is trusted only after a live mutation: break the guard, run the
+suite, and see exactly that check fail. The package comment in
+[tests/e2e/e2e_test.go](tests/e2e/e2e_test.go) lists which checks have had one.
 
 ```bash
 make e2e-kind VAULT_LICENSE_FILE=<.hclic>   # build the lab and run the suite
@@ -155,6 +154,12 @@ with the `Namespace` controller fix.
 
 ### Known VCO problems the lab shows
 
+- A `SecretEngineMount` or `AuthEngineMount` without `spec.config` never gets
+  VCO's finalizer, in every release including v1.0.3: VCO's update sends
+  `listingVisibility: ""` (the Go field has no `omitempty`), and its own CRD
+  enum refuses it (`Unsupported value: ""`). Deleting such a CR deletes nothing
+  in Vault. The charts set `config.listingVisibility: hidden`, Vault's default;
+  the render check `listingvis` and the e2e render step guard it.
 - The `Namespace` kind panics on every reconcile, in every release since
   v0.8.50: `interface conversion: interface {} is nil, not *api.Client` at
   `internal/controller/namespace_controller.go:77`. The CR never gets a status.

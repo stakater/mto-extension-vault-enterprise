@@ -33,6 +33,9 @@ spec:
   path: {{ .Values.sso.mount.path }}
   name: {{ .Values.sso.mount.name }}
   type: oidc
+  # listingVisibility: see the kubernetes mount (01-tenant-scaffolding.yaml).
+  config:
+    listingVisibility: hidden
 ---
 apiVersion: redhatcop.redhat.io/v1alpha1
 kind: JWTOIDCAuthEngineConfig

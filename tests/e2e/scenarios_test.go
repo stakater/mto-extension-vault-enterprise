@@ -223,6 +223,40 @@ func TestE2E(t *testing.T) {
 			waitVCO(t, "policies", r)
 			waitVCO(t, "kubernetesauthengineroles", r)
 		}
+		// VCO deletes an object in Vault only through its finalizer, which it
+		// adds after the first successful reconcile. A CR without it is deleted
+		// at once and nothing happens in Vault. VCO's own update refused every
+		// mount this way until the charts set config.listingVisibility.
+		deletable := map[string]string{"namespaces": "Namespace", "secretenginemounts": "SecretEngineMount",
+			"authenginemounts": "AuthEngineMount", "policies": "Policy",
+			"kubernetesauthengineroles": "KubernetesAuthEngineRole", "jwtoidcauthengineroles": "JWTOIDCAuthEngineRole"}
+		waitFor(t, "VCO's finalizer on every CR it deletes", func() string {
+			var missing []string
+			seen := 0
+			for res, kind := range deletable {
+				l, err := dyn.Resource(vcoGVR(res)).Namespace(configNS).List(ctx, metav1.ListOptions{})
+				if err != nil {
+					return err.Error()
+				}
+				for _, o := range l.Items {
+					if tn := o.GetLabels()[tenantLabel]; tn != alpha && tn != beta && !strings.HasPrefix(o.GetName(), sharedNS) {
+						continue
+					}
+					seen++
+					if !slices.Contains(o.GetFinalizers(), "controller-"+strings.ToLower(kind)) {
+						missing = append(missing, res+"/"+o.GetName())
+					}
+				}
+			}
+			slices.Sort(missing)
+			switch {
+			case seen == 0:
+				return "no CR of the e2e tenants found"
+			case len(missing) > 0:
+				return "no VCO finalizer on " + strings.Join(missing, ", ")
+			}
+			return ""
+		})
 		// Inspected as root: each tenant is a namespace with its own kv/ and its
 		// own workload auth mount, and holds only its own policies.
 		nss := vaultNamespaces(t)
@@ -431,17 +465,7 @@ func TestE2E(t *testing.T) {
 		// It asserts nothing; every check runs as the viewer.
 		role := roleName(alpha, alphaNS, "viewer")
 		p := appPath(alphaNS, "viewer", "cfg")
-		// sys/policy/<name> answers with "rules"; sys/policies/acl/ says "policy".
-		var pol struct {
-			Data struct {
-				Rules string `json:"rules"`
-			} `json:"data"`
-		}
-		raw := vaultIn(t, alpha, "read", "-format=json", "sys/policy/"+role)
-		if err := json.Unmarshal([]byte(raw), &pol); err != nil || pol.Data.Rules == "" {
-			t.Fatalf("read the viewer's policy: no rules in %q, err %v", raw, err)
-		}
-		widened := pol.Data.Rules + "\npath \"kv/data/" + env + "/" + alphaNS + "/viewer/*\" { capabilities = [\"create\", \"update\"] }\n"
+		widened := policyRules(t, alpha, role) + "\npath \"kv/data/" + env + "/" + alphaNS + "/viewer/*\" { capabilities = [\"create\", \"update\"] }\n"
 		vaultIn(t, alpha, "write", "sys/policy/"+role, "policy="+widened)
 		viewerToken, _ := vaultLogin(t, alpha, role, saToken(t, alphaNS, "viewer"))
 		// The change took effect: without it, the revert below would prove nothing.
@@ -1164,6 +1188,129 @@ func TestE2E(t *testing.T) {
 		readerToken, _ := vaultLogin(t, beta, readerRole, saToken(t, betaNS, "reader"))
 		if got, err := kvGet(t, readerToken, beta, appPath(betaNS, "reader", "cfg"), "mode"); err != nil || got != "beta" {
 			t.Fatalf("the workload could not read its surviving secret after its namespace came back: got %q, err %v", got, err)
+		}
+	})
+
+	step("offboarding: deleting a Tenant keeps its Vault data under the production VCO policy", func(t *testing.T) {
+		// The lab's VCO login policy allows every delete, so the teardown can
+		// clean up. The production one (charts/examples/vco-admin-policy.hcl)
+		// refuses a delete on a tenant's Vault namespace and kv mount: that
+		// refusal is what keeps a tenant's secrets when its Tenant CR goes
+		// (charts/README.md → Deletion). Root swaps it in for this step only.
+		prod, err := os.ReadFile("../../charts/examples/vco-admin-policy.hcl")
+		if err != nil {
+			t.Fatalf("read the production VCO policy: %v", err)
+		}
+		lab := policyRules(t, "", vcoLogin)
+		t.Cleanup(func() { vaultIn(t, "", "write", "sys/policy/"+vcoLogin, "policy="+lab) })
+		vaultIn(t, "", "write", "sys/policy/"+vcoLogin, "policy="+string(prod))
+
+		// The data that must stay: e2e-beta's own secret, and both shares with
+		// e2e-alpha, which live in the shared Vault namespace. Inspected as
+		// root: e2e-beta's workloads lose their logins with the Tenant.
+		handoff := env + "/from-" + alpha + "/to-" + beta + "/handoff"
+		reverse := env + "/from-" + beta + "/to-" + alpha + "/x"
+		data := func() string {
+			if got, err := kvGet(t, vaultRootToken, beta, appPath(betaNS, "reader", "cfg"), "mode"); err != nil || got != "beta" {
+				return fmt.Sprintf("e2e-beta's secret: got %q, err %v", got, err)
+			}
+			if got, err := kvGet(t, vaultRootToken, sharedNS, handoff, "token"); err != nil || got != "t1" {
+				return fmt.Sprintf("the share to e2e-beta: got %q, err %v", got, err)
+			}
+			if got, err := kvGet(t, vaultRootToken, sharedNS, reverse, "token"); err != nil || got != "r1" {
+				return fmt.Sprintf("the share from e2e-beta: got %q, err %v", got, err)
+			}
+			return ""
+		}
+		if msg := data(); msg != "" {
+			t.Fatalf("before the deletion: %s", msg)
+		}
+
+		// MTO deletes a Tenant together with its namespaces.
+		deleteTenant(t, beta, betaNS)
+
+		// The grants go, under the production policy too: every e2e-beta CR
+		// except the two that hold data, and e2e-alpha's share role to the
+		// tenant that is gone.
+		dataCRs := []struct{ kind, name string }{{"namespaces", beta}, {"secretenginemounts", beta + "-kv"}}
+		waitFor(t, "every e2e-beta CR gone except its data", func() string {
+			objs := tenantVCOObjects(t, beta)
+			var grants []string
+			for _, o := range objs {
+				if o != "namespaces/"+beta && o != "secretenginemounts/"+beta+"-kv" {
+					grants = append(grants, o)
+				}
+			}
+			switch {
+			case len(grants) > 0:
+				return "still present: " + strings.Join(grants, ", ")
+			case len(objs) != len(dataCRs):
+				return fmt.Sprintf("the data CRs are not both there: %v", objs)
+			}
+			return ""
+		})
+		outRole := "share." + alpha + "." + alphaNS + ".web.out." + beta
+		for _, k := range []string{"policies", "kubernetesauthengineroles"} {
+			waitFor(t, k+"/"+outRole+" gone with its peer", func() string {
+				if get(t, vcoGVR(k), configNS, outRole) != nil {
+					return "still present"
+				}
+				return ""
+			})
+		}
+		if msg := vaultGone(t, sharedNS, "policy", "read", outRole); msg != "" {
+			t.Errorf("e2e-alpha's share policy to e2e-beta is still in Vault: %s", msg)
+		}
+
+		// VCO tries to delete the data, Vault refuses, and VCO's finalizer holds
+		// both CRs. Held across a drift period, as in the lifetime step.
+		holdFor(t, vcoSync+15*time.Second, "e2e-beta's data after its Tenant was deleted", func() string {
+			for _, o := range dataCRs {
+				switch obj := get(t, vcoGVR(o.kind), configNS, o.name); {
+				case obj == nil:
+					return o.kind + "/" + o.name + " was deleted"
+				case obj.GetDeletionTimestamp() == nil:
+					return o.kind + "/" + o.name + " is not being deleted: the Tenant's deletion did not reach it"
+				}
+			}
+			return data()
+		})
+
+		// The refusal is the policy's: VCO's own login reads the namespace and
+		// the mount, and is refused the delete of each. Under the lab policy
+		// both deletes would pass.
+		vcoToken, _, err := vaultTryLoginAt(t, "", vcoLoginMount, vcoLogin, saToken(t, configNS, vcoLogin))
+		if err != nil {
+			t.Fatalf("log in as VCO: %v", err)
+		}
+		if _, err := vaultRun(t, vcoToken, "", "read", "sys/namespaces/"+beta); err != nil {
+			t.Fatalf("VCO could not read e2e-beta's Vault namespace: %v", err)
+		}
+		if _, err := vaultRun(t, vcoToken, "", "namespace", "delete", beta); !refused(err) {
+			t.Errorf("VCO's login deleted e2e-beta's Vault namespace; err: %v", err)
+		}
+		if _, err := vaultRun(t, vcoToken, beta, "read", "sys/mounts/kv"); err != nil {
+			t.Fatalf("VCO could not read e2e-beta's kv mount: %v", err)
+		}
+		if _, err := vaultRun(t, vcoToken, beta, "secrets", "disable", "kv"); !refused(err) {
+			t.Errorf("VCO's login disabled e2e-beta's kv mount; err: %v", err)
+		}
+
+		// The documented way to really delete a tenant (charts/README.md →
+		// Deletion): a Vault admin deletes the namespace, then removes the
+		// finalizers.
+		vaultIn(t, "", "namespace", "delete", beta)
+		waitFor(t, "e2e-beta's Vault namespace deleted", func() string {
+			return vaultGone(t, "", "read", "sys/namespaces/"+beta)
+		})
+		for _, o := range dataCRs {
+			removeFinalizers(t, vcoGVR(o.kind), configNS, o.name)
+			waitFor(t, o.kind+"/"+o.name+" gone", func() string {
+				if get(t, vcoGVR(o.kind), configNS, o.name) != nil {
+					return "still present"
+				}
+				return ""
+			})
 		}
 	})
 

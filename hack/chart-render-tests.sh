@@ -101,6 +101,11 @@
 #  37. ssoaudience  — every SSO role, the fallback role too, accepts exactly
 #                     sso.oidc.clientId as its audience, for the default client
 #                     and for another one. An ID token's aud is the client ID.
+#  38. listingvis   — every SecretEngineMount and AuthEngineMount, in the tenant
+#                     chart and the parent, sets config.listingVisibility. Unset,
+#                     VCO's finalizer update sends "" and its CRD enum refuses it:
+#                     the CR gets no finalizer, and deleting it never deletes the
+#                     mount in Vault.
 #
 # The parent gotemplate is rendered through helm's tpl — an approximation of
 # t-op-v2's text/template+Sprig engine that is exact for the constructs it uses.
@@ -1001,5 +1006,19 @@ for c in "default:$WORK/all.raw:vault" "custom:$WORK/sa-custom.yaml:mto-vault"; 
   [ -z "$sabad" ] || { sa_ok=1; sa_detail="$sa_detail [$name: roles whose audience is not the client ID $want: $(tr '\n' ' ' <<<"$sabad")]"; }
 done
 check ssoaudience "$sa_ok" "$sa_detail"
+
+# 38. listingvis — every mount sets config.listingVisibility to a value VCO's
+# CRD enum accepts. Unset, VCO's finalizer update sends "" and is refused, so
+# the CR never gets VCO's finalizer and deleting it never deletes the mount.
+lv_ok=0; lv_detail=""
+for c in "tenant:$WORK/all.raw:2" "parent:$WORK/emit-enabled.yaml:3"; do
+  name="${c%%:*}"; rest="${c#*:}"; file="${rest%:*}"; min="${rest##*:}"
+  yqs lvmounts 'select(.kind == "SecretEngineMount" or .kind == "AuthEngineMount") | .kind + "/" + .metadata.name' "$file"
+  n=$(grep -c . <<<"$lvmounts" || true)
+  [ "$n" -ge "$min" ] || { lv_ok=1; lv_detail="$lv_detail [$name: $n mounts rendered, want at least $min — the check below proves nothing]"; }
+  yqs lvbad 'select(.kind == "SecretEngineMount" or .kind == "AuthEngineMount") | select(.spec.config.listingVisibility != "hidden" and .spec.config.listingVisibility != "unauth") | .kind + "/" + .metadata.name + " -> " + (.spec.config.listingVisibility // "<unset>")' "$file"
+  [ -z "$lvbad" ] || { lv_ok=1; lv_detail="$lv_detail [$name: mounts without a valid listingVisibility: $(tr '\n' ' ' <<<"$lvbad")]"; }
+done
+check listingvis "$lv_ok" "$lv_detail"
 
 exit "$fail"

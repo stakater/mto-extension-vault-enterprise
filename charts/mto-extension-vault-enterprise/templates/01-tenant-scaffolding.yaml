@@ -26,6 +26,12 @@ spec:
   path: {{ .Values.kubernetesAuth.path }}
   name: {{ .Values.kubernetesAuth.name }}
   type: kubernetes
+  # VCO adds its finalizer with an update that sends every config field, and
+  # an unset listingVisibility goes as "", which VCO's own CRD enum refuses.
+  # The CR then has no finalizer, and deleting it never deletes the mount in
+  # Vault. "hidden" is Vault's default.
+  config:
+    listingVisibility: hidden
 ---
 apiVersion: redhatcop.redhat.io/v1alpha1
 kind: KubernetesAuthEngineConfig

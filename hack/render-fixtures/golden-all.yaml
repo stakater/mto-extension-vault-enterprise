@@ -298,6 +298,12 @@ spec:
     serviceAccount:
       name: vco-sa
     targetNamespace: team-a
+  # VCO adds its finalizer with an update that sends every config field, and
+  # an unset listingVisibility goes as "", which VCO's own CRD enum refuses.
+  # The CR then has no finalizer, and deleting it never deletes the mount in
+  # Vault. "hidden" is Vault's default.
+  config:
+    listingVisibility: hidden
   name: workloads
   path: kubernetes
   type: kubernetes
@@ -323,6 +329,9 @@ spec:
     serviceAccount:
       name: vco-sa
     targetNamespace: team-a
+  # listingVisibility: see the kubernetes mount (01-tenant-scaffolding.yaml).
+  config:
+    listingVisibility: hidden
   name: sso
   path: oidc
   type: oidc

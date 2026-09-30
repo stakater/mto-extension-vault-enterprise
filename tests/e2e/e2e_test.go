@@ -49,6 +49,34 @@
 //
 //	E2E_DEX_ISSUER, E2E_KEYCLOAK_URL, E2E_DEX_NAMESPACE, E2E_KEYCLOAK_NAMESPACE
 //	                       where Dex and Keycloak run; defaults match the lab
+//
+// # Live mutations
+//
+// A denial is trusted only after a live mutation: break the guard in a copy of
+// the repo, publish that copy's tenant chart (make lab-chart-repo), run the
+// suite from the copy, and see exactly that check fail. One mutation per run:
+// the first failed step ends the run. These checks have had one (the
+// mutation, then the check that failed):
+//
+//   - the original denials and the drift step
+//   - editor tier with delete, viewer tier with patch: the editor soft delete
+//     and the viewer patch (versions step)
+//   - SSO audit-read with data read, SSO editor with destroy: both refusals
+//     (sso audit-read step)
+//   - every SSO role also bound to <tenant>-viewers: bob's editor login
+//   - no app-collision guard: the error ConfigMap for billing-sa
+//   - the own data path with + for the namespace: both cross-namespace reads
+//     of api
+//   - no default ServiceAccount guard: the error ConfigMap for default
+//   - no subscribe guard for a Deployment: the deploy-error ConfigMap
+//   - a mount without listingVisibility: VCO's finalizer (render step)
+//   - a production VCO policy that may delete the namespace and the kv mount:
+//     the kept data CRs (offboarding step)
+//
+// Not mutated yet: the logins that change one binding, the subscriber's
+// metadata update, the tier change, the revocation of an issued token, the
+// lifetime hold, the VCO revert and move checks, and the template-operator
+// restore.
 package e2e
 
 import (
@@ -68,6 +96,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -85,6 +114,12 @@ const (
 	env          = "dev"
 	sharedNS     = "shared"
 	k8sAuthMount = "kubernetes/workloads"
+
+	// VCO's own Vault login: the bootstrap chart's vco.serviceAccount default,
+	// and the role and policy make lab-vault-bootstrap writes in Vault's root
+	// namespace, at the root kubernetes auth mount.
+	vcoLogin      = "vco-admin"
+	vcoLoginMount = "kubernetes"
 
 	// ESO re-reads Vault at this interval. Short, so the rotation scenario does
 	// not wait an hour; set through the bootstrap value it is plumbed from.
@@ -343,6 +378,33 @@ func deleteIfExists(t *testing.T, gvr schema.GroupVersionResource, ns, name stri
 	err := dyn.Resource(gvr).Namespace(ns).Delete(ctx, name, metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		t.Fatalf("delete %s %s/%s: %v", gvr.Resource, ns, name, err)
+	}
+}
+
+// tenantVCOObjects lists every VCO CR that carries the tenant's label, as
+// "<kind>/<name>": the parent's data objects and the tenant chart's render.
+func tenantVCOObjects(t *testing.T, tenant string) []string {
+	t.Helper()
+	var objs []string
+	for _, k := range vcoKinds {
+		l, err := dyn.Resource(vcoGVR(k)).Namespace(configNS).List(ctx, metav1.ListOptions{LabelSelector: tenantLabel + "=" + tenant})
+		if err != nil {
+			t.Fatalf("list %s of tenant %s: %v", k, tenant, err)
+		}
+		for _, o := range l.Items {
+			objs = append(objs, k+"/"+o.GetName())
+		}
+	}
+	return objs
+}
+
+// removeFinalizers clears an object's finalizers, as an admin does to let a
+// CR go that its controller cannot finish deleting.
+func removeFinalizers(t *testing.T, gvr schema.GroupVersionResource, ns, name string) {
+	t.Helper()
+	patch := []byte(`{"metadata":{"finalizers":null}}`)
+	if _, err := dyn.Resource(gvr).Namespace(ns).Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		t.Fatalf("remove the finalizers of %s %s/%s: %v", gvr.Resource, ns, name, err)
 	}
 }
 

@@ -85,6 +85,12 @@ spec:
     targetNamespace: {{ $shared | quote }}
   name: kv
   type: kv
+  # VCO adds its finalizer with an update that sends every config field, and
+  # an unset listingVisibility goes as "", which VCO's own CRD enum refuses.
+  # The CR then has no finalizer, and deleting it never deletes the mount in
+  # Vault. "hidden" is Vault's default.
+  config:
+    listingVisibility: hidden
   options:
     version: "2"
 ---
@@ -98,6 +104,9 @@ spec:
   path: {{ $k8sPath }}
   name: {{ $k8sName }}
   type: kubernetes
+  # listingVisibility: see the shared kv mount above.
+  config:
+    listingVisibility: hidden
 ---
 apiVersion: redhatcop.redhat.io/v1alpha1
 kind: KubernetesAuthEngineConfig
@@ -137,6 +146,9 @@ spec:
     targetNamespace: {{ $name | quote }}
   name: kv
   type: kv
+  # listingVisibility: see the shared kv mount above.
+  config:
+    listingVisibility: hidden
   options:
     version: "2"
 {{- /* The workload render, only for a tenant with a labelled namespace: its

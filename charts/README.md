@@ -285,8 +285,17 @@ without the `kv.` prefix, tenant `sso` with namespace `acme` and ServiceAccount
 `admin` got the name of tenant `acme`'s SSO admin Policy.
 
 What is tested: the e2e suite proves that deleting a tenant's last namespace
-keeps its Vault namespace and secrets. The production policy's refused delete
-is not exercised by the suite, which uses the lab policy.
+keeps its Vault namespace and secrets. It also deletes a Tenant under the
+production policy ([examples/vco-admin-policy.hcl](examples/vco-admin-policy.hcl)):
+the grants go, the Vault namespace, the kv mount and the tenant's shares in
+the shared namespace stay, the two CRs stay `Terminating`, and the admin
+procedure above then finishes the deletion.
+
+A cross-tenant share lives in the shared Vault namespace, not in either
+tenant's, so deleting a tenant never deletes it. The share roles go with the
+tenant, on both sides. A new tenant with the same name gets them back, and with
+them the old share data: delete `from-<tenant>/` and `to-<tenant>/` paths in the
+shared namespace when a name must not be reused with its data.
 
 ## Uninstall
 
