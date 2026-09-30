@@ -1,15 +1,18 @@
 # Parent Template (gotemplate). Watches MTO Tenant CRs cluster-wide through the
 # parent TI's objectFieldRef and renders:
 #   - the shared Vault namespace scaffolding (singleton per Vault)
-#   - one TemplateInstance per enabled child Template, per Tenant CR
+#   - every Tenant's Vault namespace and kv mount, for as long as the Tenant exists
+#   - one TemplateInstance per enabled child Template, per Tenant with a
+#     labelled namespace
+#   - a ConfigMap listing the Tenants it skipped, and why
 #
 # The gotemplate body lives in files/parent-gotemplate.tpl (sourced via
 # .Files.Get to keep the t-op-v2 action delimiters out of helm's engine).
-{{- /* The parent renders the shared scaffolding only: no roles, no policies,
-       no OIDC. */ -}}
-{{- $sharedKinds := list
-      (dict "kind" "Namespace"                  "output" "sharedNamespace")
-      (dict "kind" "SecretEngineMount"          "output" "sharedEngines")
+{{- /* What the parent renders itself: every tenant's namespace and kv mount,
+       and the shared auth mount and its config. */ -}}
+{{- $parentKinds := list
+      (dict "kind" "Namespace"                  "output" "namespaces")
+      (dict "kind" "SecretEngineMount"          "output" "engines")
       (dict "kind" "AuthEngineMount"            "output" "sharedAuthMounts")
       (dict "kind" "KubernetesAuthEngineConfig" "output" "sharedAuthConfigs") }}
 ---
@@ -33,8 +36,6 @@ spec:
            tenantLabelKey. No `name`, so t-op-v2 LISTs the GVK; the read is
            granted by the tenant-reader ClusterRole in 00-rbac.yaml. */}}
     - name: tenantNamespaces
-    - name: env
-      value: {{ .Values.parent.env | quote }}
     - name: configNamespace
       value: {{ .Values.configNamespace | quote }}
     - name: childTemplateName
@@ -43,17 +44,11 @@ spec:
       value: {{ .Values.parent.tenantLabelKey | quote }}
     - name: sharedTenantName
       value: {{ .Values.parent.sharedTenantName | quote }}
-    - name: ssoEnabled
-      value: {{ include "mto-extension-vault-enterprise-bootstrap.ssoEnabled" . | quote }}
-    - name: ssoIssuerUrl
-      value: {{ (include "mto-extension-vault-enterprise-bootstrap.parentSso" . | fromYaml).issuerUrl | default "" | quote }}
     - name: eso
       value: {{ include "mto-extension-vault-enterprise-bootstrap.esoMode" . | quote }}
-    - name: externalSecretRefreshInterval
-      value: {{ .Values.parent.externalSecretRefreshInterval | quote }}
-    # How the shared scaffolding's VCO CRs log in, and the workload auth mount
-    # inside the shared namespace. Same values the child Templates stamp into
-    # every tenant, so a share role and its mount agree.
+    # How the parent's VCO CRs log in, and the workload auth mount inside the
+    # shared namespace. Same values the child Templates stamp into every tenant,
+    # so a share role and its mount agree.
     - name: vcoAuthPath
       value: {{ .Values.vco.authPath | quote }}
     - name: vcoRole
@@ -70,12 +65,13 @@ spec:
       value: {{ .Values.kubernetesAuth.kubernetesHost | quote }}
     - name: tokenReviewerServiceAccount
       value: {{ .Values.kubernetesAuth.tokenReviewerServiceAccount | default "" | quote }}
-  # State of the shared scaffolding this Template renders itself, plus every
-  # child TI it emits. The shared objects are singletons behind every
-  # cross-tenant share. See the vcoOutputs helper for what the Succeeded and
-  # LastError fields can and cannot say.
+  # State of what this Template renders itself, plus every child TI it emits.
+  # namespaces and engines hold one entry per tenant plus the shared one, so
+  # past ~49 tenants the 50-entry cap drops entries (OutputsResolved says so).
+  # See the vcoOutputs helper for what the Succeeded and LastError fields can
+  # and cannot say.
   outputs:
-    {{- include "mto-extension-vault-enterprise-bootstrap.vcoOutputs" (dict "ns" .Values.configNamespace "kinds" $sharedKinds) | nindent 4 }}
+    {{- include "mto-extension-vault-enterprise-bootstrap.vcoOutputs" (dict "ns" .Values.configNamespace "kinds" $parentKinds) | nindent 4 }}
     # tiRendered / tiNsAllowed / tiParamsValid separate failure classes a bare
     # tiReady=False cannot: each needs a different fix.
     - name: tenants

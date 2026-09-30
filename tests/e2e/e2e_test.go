@@ -29,13 +29,26 @@
 //	E2E_WAIT_TIMEOUT       per-wait budget (Go duration, default 4m)
 //	E2E_VCO_SYNC_PERIOD    VCO's drift period (SYNC_PERIOD_SECONDS) as a Go duration;
 //	                       the suite watches objects across it (default 30s, the lab's)
+//	                       and checks that VCO's Deployment really runs with it
+//	E2E_VCO_NAMESPACE, E2E_VCO_DEPLOYMENT
+//	                       where VCO runs; defaults match the lab
 //	E2E_KEEP=1             skip the final uninstall, to inspect the cluster afterwards
+//	E2E_KEEP_ON_FAILURE=1  skip the uninstall only when the run failed, so a
+//	                       diagnostics dump after go test still sees the failed
+//	                       state (make e2e-kind sets it)
 //
 // The suite needs Vault ENTERPRISE: tenant isolation is one Vault namespace per
 // tenant, and Community Edition ignores namespaces. It checks the edition first
 // and refuses to run on Community Edition rather than report collisions as
-// passes. SSO is not covered: it needs an OIDC provider, and nothing here stands
-// one up.
+// passes.
+//
+// SSO runs through the lab's Keycloak and Dex (make lab-keycloak, make
+// lab-dex), as in production: Vault -> Dex -> Keycloak. The suite logs Keycloak
+// test users in without a browser (sso.go), and checks that each user's group
+// gives exactly its tier, in its own tenant only.
+//
+//	E2E_DEX_ISSUER, E2E_KEYCLOAK_URL, E2E_DEX_NAMESPACE, E2E_KEYCLOAK_NAMESPACE
+//	                       where Dex and Keycloak run; defaults match the lab
 package e2e
 
 import (
@@ -88,6 +101,12 @@ var (
 	tov2SA       string
 	waitTimeout  time.Duration
 	vcoSync      time.Duration
+	vcoNS        string
+	vcoDeploy    string
+	dexIssuer    string
+	keycloakURL  string
+	dexNS        string
+	keycloakNS   string
 
 	dyn  dynamic.Interface
 	kube kubernetes.Interface
@@ -128,6 +147,12 @@ func TestMain(m *testing.M) {
 	vaultPod = envOr("E2E_VAULT_POD", "vault-0")
 	vaultServer = envOr("E2E_VAULT_SERVER", "http://vault.vault.svc:8200")
 	tov2SA = os.Getenv("E2E_TOV2_SA")
+	vcoNS = envOr("E2E_VCO_NAMESPACE", "vault-config-operator")
+	vcoDeploy = envOr("E2E_VCO_DEPLOYMENT", "vault-config-operator")
+	dexNS = envOr("E2E_DEX_NAMESPACE", "dex")
+	keycloakNS = envOr("E2E_KEYCLOAK_NAMESPACE", "keycloak")
+	dexIssuer = envOr("E2E_DEX_ISSUER", "http://dex.dex.svc.cluster.local:5556")
+	keycloakURL = envOr("E2E_KEYCLOAK_URL", "http://keycloak.keycloak.svc.cluster.local:8080")
 	var err error
 	if waitTimeout, err = time.ParseDuration(envOr("E2E_WAIT_TIMEOUT", "4m")); err != nil {
 		println("E2E_WAIT_TIMEOUT:", err.Error())
@@ -146,6 +171,8 @@ func TestMain(m *testing.M) {
 		println("kubeconfig:", err.Error())
 		os.Exit(1)
 	}
+	// Every API call is bounded: a hung request must fail its step.
+	cfg.Timeout = time.Minute
 	if dyn, err = dynamic.NewForConfig(cfg); err != nil {
 		println("dynamic client:", err.Error())
 		os.Exit(1)
@@ -192,6 +219,10 @@ func helmInstall(t *testing.T) {
 		"--set", "parent.vaultServer=" + vaultServer,
 		"--set", "parent.eso=enabled",
 		"--set", "parent.externalSecretRefreshInterval=" + esoRefresh,
+		// SSO through the lab's Dex; the client secret is copied into configNS
+		// by copyOIDCClientSecret before this install.
+		"--set", "parent.sso.enabled=true",
+		"--set", "parent.sso.issuerUrl=" + dexIssuer,
 	}
 	if tov2SA != "" {
 		parts := strings.Split(strings.TrimPrefix(tov2SA, "system:serviceaccount:"), ":")
@@ -235,13 +266,18 @@ func uninstall(t *testing.T) {
 
 func releaseExists(t *testing.T) bool {
 	t.Helper()
-	cmd := exec.Command(helmBin(), "status", releaseName, "--kube-context", kubeContext, "-n", configNS)
+	cctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, helmBin(), "status", releaseName, "--kube-context", kubeContext, "-n", configNS)
 	return cmd.Run() == nil
 }
 
 func run(t *testing.T, bin string, args ...string) string {
 	t.Helper()
-	out, err := exec.Command(bin, args...).CombinedOutput()
+	// helm --wait has its own 5m default; the rest are quick. Bounded either way.
+	cctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	out, err := exec.CommandContext(cctx, bin, args...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s %s: %v\n%s", bin, strings.Join(args, " "), err, out)
 	}
@@ -350,6 +386,11 @@ func waitVCO(t *testing.T, kind, name string) {
 		if o == nil {
 			return "absent"
 		}
+		// A CR in deletion keeps its old ReconcileSuccessful=True while VCO
+		// deletes its object in Vault: that is the object going, not coming.
+		if o.GetDeletionTimestamp() != nil {
+			return "being deleted"
+		}
 		if s, _ := condition(o, "ReconcileSuccessful"); s == "True" {
 			return ""
 		}
@@ -401,6 +442,27 @@ func deleteTenant(t *testing.T, tenant string, namespaces ...string) {
 			return ""
 		})
 	}
+}
+
+// deleteTenantNamespace deletes one tenant namespace and waits until it is gone.
+func deleteTenantNamespace(t *testing.T, ns string) {
+	t.Helper()
+	if err := kube.CoreV1().Namespaces().Delete(ctx, ns, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		t.Fatalf("delete namespace %s: %v", ns, err)
+	}
+	// Only NotFound is "gone": another error keeps the wait going and ends it
+	// with that error, instead of reading as a deleted namespace.
+	waitFor(t, "namespace "+ns+" gone", func() string {
+		_, err := kube.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
+		switch {
+		case err == nil:
+			return "still present"
+		case apierrors.IsNotFound(err):
+			return ""
+		default:
+			return err.Error()
+		}
+	})
 }
 
 func createServiceAccount(t *testing.T, ns, name string, ann map[string]string) {
@@ -499,10 +561,90 @@ func runningPod(t *testing.T, ns, app string) string {
 	return ready[0]
 }
 
-// podEnv reads an environment variable from inside a running pod — the value
-// the application actually sees, not the value in the Secret.
-func podEnv(t *testing.T, ns, pod, name string) string {
+// deploymentEnv returns the literal env values of every container of a
+// Deployment (valueFrom entries are skipped).
+func deploymentEnv(t *testing.T, ns, name string) map[string]string {
 	t.Helper()
-	out := run(t, kubectlBin(), "--context", kubeContext, "-n", ns, "exec", pod, "--", "printenv", name)
-	return strings.TrimSpace(out)
+	d, err := kube.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get Deployment %s/%s: %v", ns, name, err)
+	}
+	env := map[string]string{}
+	for _, c := range d.Spec.Template.Spec.Containers {
+		for _, e := range c.Env {
+			if e.ValueFrom == nil {
+				env[e.Name] = e.Value
+			}
+		}
+	}
+	return env
+}
+
+// configMapData returns a ConfigMap's data, or nil when it is absent.
+func configMapData(t *testing.T, ns, name string) map[string]string {
+	t.Helper()
+	cm, err := kube.CoreV1().ConfigMaps(ns).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("get ConfigMap %s/%s: %v", ns, name, err)
+	}
+	return cm.Data
+}
+
+// serviceAccountAnnotations returns a ServiceAccount's annotations (nil when
+// it has none), so a step that changes them can put them back.
+func serviceAccountAnnotations(t *testing.T, ns, name string) map[string]string {
+	t.Helper()
+	sa, err := kube.CoreV1().ServiceAccounts(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get ServiceAccount %s/%s: %v", ns, name, err)
+	}
+	return sa.Annotations
+}
+
+// deleteServiceAccount deletes a ServiceAccount; absent is fine.
+func deleteServiceAccount(t *testing.T, ns, name string) {
+	t.Helper()
+	if err := kube.CoreV1().ServiceAccounts(ns).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		t.Fatalf("delete ServiceAccount %s/%s: %v", ns, name, err)
+	}
+}
+
+// deleteDeployment deletes a Deployment; absent is fine.
+func deleteDeployment(t *testing.T, ns, name string) {
+	t.Helper()
+	if err := kube.AppsV1().Deployments(ns).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		t.Fatalf("delete Deployment %s/%s: %v", ns, name, err)
+	}
+}
+
+// setServiceAccountAnnotations replaces a ServiceAccount's annotations.
+func setServiceAccountAnnotations(t *testing.T, ns, name string, ann map[string]string) {
+	t.Helper()
+	sa, err := kube.CoreV1().ServiceAccounts(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get ServiceAccount %s/%s: %v", ns, name, err)
+	}
+	sa.Annotations = ann
+	if _, err := kube.CoreV1().ServiceAccounts(ns).Update(ctx, sa, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("update ServiceAccount %s/%s: %v", ns, name, err)
+	}
+}
+
+// podEnv reads an environment variable from inside a running pod — the value
+// the application actually sees, not the value in the Secret. It returns the
+// exec error rather than failing the test: it is called inside waitFor, and a
+// pod that starts to terminate between the poll and the exec (a rollout) must
+// make the wait poll again, not end the run.
+func podEnv(t *testing.T, ns, pod, name string) (string, error) {
+	t.Helper()
+	cctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(cctx, kubectlBin(), "--context", kubeContext, "-n", ns, "exec", pod, "--", "printenv", name).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("exec printenv %s in %s/%s: %v: %s", name, ns, pod, err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
 }

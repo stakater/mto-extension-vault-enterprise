@@ -11,6 +11,18 @@ Usage:  {{ if include "vault.componentEnabled" (dict "component" "eso" "ctx" $) 
 {{- if not (has .ctx.Values.component $valid) -}}
 {{- fail (printf "unknown component %q — must be one of: %s" .ctx.Values.component (join ", " $valid)) -}}
 {{- end -}}
+{{- /* Helm ignores unknown values, so a values file still setting a removed
+       feature would believe it is on. Checked here because every template
+       calls this first; the file named in the error is incidental. */ -}}
+{{- if hasKey .ctx.Values "networkPolicy" -}}
+{{- fail "networkPolicy was removed: a default-deny egress policy for tenant workloads is not this chart's to own (use MTO's network policies). Delete networkPolicy from your values" -}}
+{{- end -}}
+{{- if hasKey ((.ctx.Values.sso | default dict).oidc | default dict) "perTenantClient" -}}
+{{- fail "sso.oidc.perTenantClient was removed: every tenant uses the one shared IdP client sso.oidc.clientId. Delete sso.oidc.perTenantClient from your values" -}}
+{{- end -}}
+{{- if hasKey (.ctx.Values.sso | default dict) "audience" -}}
+{{- fail "sso.audience was removed: every SSO role accepts sso.oidc.clientId as the audience, because an ID token's aud is the client ID it was issued to. Delete sso.audience from your values (set sso.oidc.clientId to your IdP client instead)" -}}
+{{- end -}}
 {{- /* A sliced render only happens under the bootstrap's per-tenant
        TemplateInstance convention (mto-extension-vault-enterprise-<tenant>[.eso]), and
        template-operator-v2 stamps that TI name as a label value on every
@@ -29,6 +41,26 @@ Usage:  {{ if include "vault.componentEnabled" (dict "component" "eso" "ctx" $) 
 {{- end -}}
 
 {{/*
+Returns "true" when a toggle is on, "" when it is off. A boolean, or the string
+"true"/"false"; absent or null is off. Anything else fails. Never test a toggle
+with a bare `if .Values.x.enabled`: the string "false" is non-empty, so it is
+TRUE to Go templates, and the schema accepts it (it has to — t-op-v2 and
+--set-string send strings).
+Usage: {{ if include "vault.on" (dict "name" "sso.enabled" "value" .Values.sso.enabled) }}
+*/}}
+{{- define "vault.on" -}}
+{{- $v := .value -}}
+{{- if kindIs "invalid" $v -}}
+{{- else -}}
+{{- $s := toString $v -}}
+{{- if not (has $s (list "true" "false")) -}}
+{{- fail (printf "%s must be true or false — got %q" .name $s) -}}
+{{- end -}}
+{{- if eq $s "true" -}}true{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Fails the render if a generated resource name exceeds the 253-char Kubernetes
 metadata.name limit, naming the offender. Returns the name unchanged.
 */}}
@@ -40,24 +72,33 @@ metadata.name limit, naming the offender. Returns the name unchanged.
 {{- end -}}
 
 {{/*
-Per-SA own-tenant role/policy name: <tenant>-<saNs>-<sa>.
+Per-SA own-tenant role/policy name: kv.<tenant>.<saNs>.<sa>.
 
-The tier is deliberately not part of it: (tenant, namespace, serviceAccount) is
-already unique, so a tier suffix would make a mutable attribute part of the
-object's identity, and a tier edit a rename.
+Joined with dots because none of the parts can contain one: the tenant is
+checked by vault.labels, a namespace is a DNS label, and saFacts rejects a
+dotted ServiceAccount name. With hyphens, namespace t-web + ServiceAccount api-x
+and namespace t-web-api + ServiceAccount x gave the same name, and two tenants
+whose names are prefixes of each other could collide in configNamespace.
+
+The `kv.` prefix keeps the name families apart: kv.* has 4 parts, sso.* 3 and
+share.* 6, so no name of one family can equal a name of another. Without it,
+tenant "sso" with namespace "acme" and ServiceAccount "admin" rendered Policy
+sso.acme.admin, the name of tenant acme's SSO admin Policy.
+
+The tier is deliberately not part of it: a tier edit would become a rename.
 */}}
 {{- define "vault.roleName" -}}
-{{- include "vault.assertName" (printf "%s-%s-%s" .tenant .saNs .saName) -}}
+{{- include "vault.assertName" (printf "kv.%s.%s.%s" .tenant .saNs .saName) -}}
 {{- end -}}
 
-{{/* Cross-tenant share-out role/policy name: share-<tenant>-<saNs>-<sa>-out-<peer>. */}}
+{{/* Cross-tenant share-out role/policy name: share.<tenant>.<saNs>.<sa>.out.<peer>. */}}
 {{- define "vault.shareOutName" -}}
-{{- include "vault.assertName" (printf "share-%s-%s-%s-out-%s" .tenant .saNs .saName .peer) -}}
+{{- include "vault.assertName" (printf "share.%s.%s.%s.out.%s" .tenant .saNs .saName .peer) -}}
 {{- end -}}
 
-{{/* Cross-tenant share-in role/policy name: share-<tenant>-<saNs>-<sa>-in-<peer>. */}}
+{{/* Cross-tenant share-in role/policy name: share.<tenant>.<saNs>.<sa>.in.<peer>. */}}
 {{- define "vault.shareInName" -}}
-{{- include "vault.assertName" (printf "share-%s-%s-%s-in-%s" .tenant .saNs .saName .peer) -}}
+{{- include "vault.assertName" (printf "share.%s.%s.%s.in.%s" .tenant .saNs .saName .peer) -}}
 {{- end -}}
 
 {{/*
@@ -68,7 +109,7 @@ tenant that does not exist; the share self-heals when that tenant appears.
 */}}
 {{- define "vault.peerEmittable" -}}
 {{- $peer := .peer -}}
-{{- $csv := .knownCsv | default "" -}}
+{{- $csv := toString (.knownCsv | default "") -}}
 {{- if not $peer -}}
 {{- else if not (trim $csv) -}}
 true
@@ -99,9 +140,9 @@ Resolution: tenantRoleMapping[<tier>].pattern → tenantGroupTemplate → fail.
 {{- $s -}}
 {{- end -}}
 
-{{/* Per-tenant-tier SSO role/policy name: sso-<tenant>-<tier>. */}}
+{{/* Per-tenant-tier SSO role/policy name: sso.<tenant>.<tier>. */}}
 {{- define "vault.ssoRoleName" -}}
-{{- printf "sso-%s-%s" .tenant .tier -}}
+{{- printf "sso.%s.%s" .tenant .tier -}}
 {{- end -}}
 
 {{/*
@@ -109,7 +150,13 @@ Common labels stamped on every chart-emitted resource. The tenant label is the
 same key the parent's namespaceSelector uses.
 */}}
 {{- define "vault.labels" -}}
-{{- $t := required ".Values.tenant must be set by the parent" .Values.tenant -}}
+{{- $t := toString (required ".Values.tenant must be set by the parent" .Values.tenant) -}}
+{{- /* A DNS label: it names the Vault namespace, is a label value, and is a
+       part of dot-joined names that must stay unambiguous. The Tenant CRD
+       itself does not restrict names. */ -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $t) -}}
+{{- fail (printf "tenant name %q is not a DNS label (lowercase letters, digits and hyphens, no dots)" $t) -}}
+{{- end -}}
 {{- if gt (len $t) 63 -}}
 {{- fail (printf "tenant name %q is %d chars; it is stamped as the %q label value on every resource and a Kubernetes label value must be <=63 chars" $t (len $t) .Values.tenantLabelKey) -}}
 {{- end -}}
@@ -118,7 +165,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/managed-by: helm-via-template-operator-v2
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
-{{ .Values.tenantLabelKey }}: {{ $t }}
+{{ .Values.tenantLabelKey }}: {{ $t | quote }}
 {{- end -}}
 
 {{/*
@@ -137,10 +184,10 @@ authentication:
   serviceAccount:
     name: {{ required "vco.serviceAccount must be set" $v.serviceAccount }}
   {{- with $v.namespace }}
-  namespace: {{ . }}
+  namespace: {{ . | quote }}
   {{- end }}
   {{- with .target }}
-  targetNamespace: {{ . }}
+  targetNamespace: {{ . | quote }}
   {{- end }}
 {{- end -}}
 

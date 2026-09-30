@@ -43,14 +43,6 @@
         }
       }
     },
-    "networkPolicy": {
-      "type": "object",
-      "properties": {
-        "enabled": {
-          "$ref": "#/definitions/boolish"
-        }
-      }
-    },
     "monitoring": {
       "type": "object",
       "properties": {

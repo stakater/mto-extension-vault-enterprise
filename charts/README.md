@@ -19,7 +19,9 @@ to Vault. Transit, PKI and cert-manager integration are **not** supported yet.
   namespaces exist only in Enterprise. On Community Edition, Vault ignores the
   namespace: every tenant's objects land in root and collide, and most of them
   still report success.
-- **vault-config-operator with two changes that are not released yet:**
+- **vault-config-operator v1.0.3 or later.** It is the first release with the two
+  changes the charts need (upstream PR
+  [#373](https://github.com/redhat-cop/vault-config-operator/pull/373)):
   1. `spec.authentication.targetNamespace` (upstream issue
      [#291](https://github.com/redhat-cop/vault-config-operator/issues/291)).
      VCO logs in once, in `vco.namespace`, and writes each tenant's objects into
@@ -40,14 +42,13 @@ to Vault. Transit, PKI and cert-manager integration are **not** supported yet.
 ## How it fits together
 
 ```
-Tenant CRs ──► parent TemplateInstance ──► per tenant:
-                 (mto-extension-vault-enterprise-parent)    TemplateInstance mto-extension-vault-enterprise-<tenant>      → core slice
-                                              TemplateInstance mto-extension-vault-enterprise-<tenant>.eso  → eso slice
-                                            once per cluster: the shared Vault namespace
+Tenant CRs ──► parent TemplateInstance (mto-extension-vault-enterprise-parent)
+                 once per cluster     the shared Vault namespace, its kv and auth mount
+                 per Tenant           Namespace <tenant>, SecretEngineMount <tenant>-kv
+                 per Tenant with a    TemplateInstance mto-extension-vault-enterprise-<tenant>      → core slice
+                 labelled namespace   TemplateInstance mto-extension-vault-enterprise-<tenant>.eso  → eso slice
 
 core slice (in configNamespace)        VCO writes to Vault
-  Namespace          <tenant>          sys/namespaces/<tenant>             (in vco.namespace)
-  SecretEngineMount  <tenant>-kv       kv/                                 (in <tenant>)
   AuthEngineMount    <tenant>-kubernetes   kubernetes/workloads/           (in <tenant>)
   KubernetesAuthEngineConfig …         kubernetes/workloads/config
   Policy + KubernetesAuthEngineRole    one pair per annotated ServiceAccount
@@ -59,11 +60,22 @@ eso slice (in workload namespaces)
   SecretStore <sa>-vault, ExternalSecret <sa>-<name>
 ```
 
-A tenant renders nothing until it has at least one labelled namespace: its
-child TemplateInstance would otherwise fail parameter validation. It self-heals
-when the first namespace is labelled. A `Tenant` named like the shared namespace
-(`parent.sharedTenantName`, default `shared`) renders nothing, because its
-`Namespace` CR would collide with the shared one.
+**A tenant's Vault namespace and kv mount live as long as its `Tenant` CR**,
+not as long as its namespaces. The parent renders them for every Tenant. The
+workload render (auth mount, roles, policies, ConfigMaps, ExternalSecrets)
+exists only while the tenant has at least one labelled namespace: its child
+TemplateInstance would otherwise fail parameter validation. So deleting a
+tenant's last namespace removes its grants and keeps its secrets; labelling a
+namespace again brings the grants back.
+
+The parent **skips** a Tenant whose name is not a DNS label (the Tenant CRD does
+not restrict names; a dot or an uppercase letter would break the Vault
+namespace, the label value and the object names), a Tenant whose name is longer
+than 63 characters (it is a label value, and label values cap at 63), and a
+Tenant named like the shared namespace (`parent.sharedTenantName`, default
+`shared`). Each skip is
+listed, with the reason, in the ConfigMap
+`mto-extension-vault-enterprise-skipped-tenants` in `configNamespace`.
 
 ## Vault bootstrap (one time, by a Vault admin)
 
@@ -75,7 +87,7 @@ login:
 ```bash
 vault auth enable kubernetes
 vault write auth/kubernetes/config kubernetes_host=https://kubernetes.default.svc:443
-vault policy write vco-admin vco-admin.hcl
+vault policy write vco-admin examples/vco-admin-policy.hcl
 vault write auth/kubernetes/role/vco-admin \
   bound_service_account_names=vco-admin \
   bound_service_account_namespaces=vault-config \
@@ -94,8 +106,10 @@ path against the full request path including the namespace. The lab
 ([hack/lab/vco-admin-policy.hcl](../hack/lab/vco-admin-policy.hcl)) is where this
 is tested.
 
-A production policy should **deny delete** on the data-bearing paths — see
-[Deletion](#deletion).
+[examples/vco-admin-policy.hcl](examples/vco-admin-policy.hcl) is the production
+policy: it **denies delete** on the data-bearing paths — see
+[Deletion](#deletion). The lab uses a broader one that allows deletes, so its
+e2e teardown can finish.
 
 ## Install
 
@@ -119,12 +133,37 @@ Values that matter (bootstrap chart):
 | `tenantChart.registry` / `.version` | `oci://ghcr.io/stakater/charts` / chart version | Where t-op-v2 pulls the tenant chart. |
 | `parent.eso` | `enabled` | `"enabled"` or `"disabled"` — a string, not a boolean. |
 | `parent.token` | `{}` | Workload token `type`, `ttl`, `maxTTL`. **Integer seconds.** |
-| `parent.sso.*` | off | Human SSO (see below). |
+| `parent.sso.*` | off | Human SSO (see below). `enabled=true` requires `issuerUrl`; the install fails without it. |
+| `tenantValues` | `{}` | Any other tenant chart value, install-wide: `vaultCABundle`, `monitoring`, `sso.oidc.*`, `sso.tiers`, `tierCaps`, `ssoToken`, … A key this chart already sets fails the render and names the value to use. |
+
+t-op-v2 pulls the **published** tenant chart, so `tenantValues` is the only way
+to set a tenant chart value on a cluster; editing the tenant chart's own
+`values.yaml` has no effect there. A Vault served with a private CA needs
+`tenantValues.vaultCABundle`: it becomes each SecretStore's `caBundle` and a
+`vault-ca-bundle` ConfigMap in every workload namespace.
 | `sync.mode` | `revert` | t-op-v2 drift protection for everything rendered. |
 
 Toggles are validated twice — by `values.schema.json` and by template guards
 that survive `--skip-schema-validation` — because a near-miss (`yes`, `on`,
 `True`) would otherwise disable a feature silently.
+
+## Trust boundary
+
+**The `stakater.com/tenant` label on a namespace is what grants a tenant's
+Vault access.** The parent finds a tenant's namespaces by that label, and the
+tenant chart renders a Policy and Role for every annotated ServiceAccount in
+them. So anyone who can set `stakater.com/tenant: X` on a namespace can give
+their own ServiceAccounts tenant X's Vault access.
+
+Keep that label under the platform's control: only MTO (and cluster admins)
+may set or change it. Tenant users must not be able to label or relabel
+namespaces — in particular they must not hold `patch` or `update` on
+`namespaces` at cluster scope. MTO's own namespace handling is built on the same
+label, so this is the same rule MTO already needs.
+
+Inside a tenant, the ServiceAccount annotations decide which app gets which
+access. Anyone who can annotate a ServiceAccount in a tenant namespace can
+request that tenant's access for it, up to the `admin` tier.
 
 ## Workload access
 
@@ -148,7 +187,7 @@ kv/data/<env>/_shared/from-<namespace>/...    written by that namespace's editor
 ```
 
 For each annotated ServiceAccount the chart renders a `Policy` and a
-`KubernetesAuthEngineRole` named `<tenant>-<namespace>-<sa>`, and a ConfigMap
+`KubernetesAuthEngineRole` named `kv.<tenant>.<namespace>.<sa>`, and a ConfigMap
 `vault-config-<sa>` in the workload namespace:
 
 ```
@@ -182,11 +221,27 @@ otherwise a `vault-config-<deployment>.deploy-error` ConfigMap explains why.
 `parent.sso.enabled=true` with `parent.sso.issuerUrl` gives each tenant an OIDC
 mount `oidc/sso` and one role per tier, bound to the IdP group
 `<tenant>-<tier>s` (`sso.tenantGroupTemplate`). The client secret is a Secret
-`vault-oidc-client-secret` (key `client-secret`) in `configNamespace`. Log in with:
+`vault-oidc-client-secret` (key `client-secret`) in `configNamespace`.
+
+All tenants share one IdP client, `tenantValues.sso.oidc.clientId` (default
+`vault`). Set it to the ID of Vault's client in the IdP (with Dex: the DCO
+`Client`'s `id`). It is also the audience every SSO role accepts, because an ID
+token's `aud` is the client ID it was issued to, so there is no separate
+audience value. `parent.sso.issuerUrl` is the issuer Vault talks to — Dex's,
+when Keycloak sits behind Dex. Log in with:
 
 ```bash
-VAULT_NAMESPACE=<tenant> vault login -method=oidc -path=oidc/sso role=sso-<tenant>-editor
+VAULT_NAMESPACE=<tenant> vault login -method=oidc -path=oidc/sso role=sso.<tenant>.editor
 ```
+
+## Monitoring
+
+`tenantValues.monitoring.enabled=true` gives each tenant a PrometheusRule with
+one alert, `VaultExternalSecretSyncFailed`: an ExternalSecret in one of the
+tenant's namespaces has `Ready=False` for 5 minutes. ESO's metric
+(`externalsecret_status_condition{name, namespace, condition, status}`) has no
+tenant label, so the rule lists the tenant's namespaces. It needs ESO's metrics
+scraped. There is no alert on the VCO objects — see Health.
 
 ## Health
 
@@ -219,6 +274,19 @@ until a person decides. To really delete a tenant, a Vault admin deletes the
 namespace, then removes the finalizer from the CR.
 
 Renaming a mount or a tenant is a delete plus a create, so the same applies.
+
+Names are joined with dots (`kv.<tenant>.<namespace>.<sa>`,
+`share.<tenant>.<namespace>.<sa>.out.<peer>`, `sso.<tenant>.<tier>`). None of
+the parts can contain a dot, so two different sets of parts can never give the
+same name — with hyphens, namespace `t-web` + ServiceAccount `api-x` and
+namespace `t-web-api` + ServiceAccount `x` did. Each family has its own number
+of parts (4, 6 and 3), so a name of one family never equals a name of another:
+without the `kv.` prefix, tenant `sso` with namespace `acme` and ServiceAccount
+`admin` got the name of tenant `acme`'s SSO admin Policy.
+
+What is tested: the e2e suite proves that deleting a tenant's last namespace
+keeps its Vault namespace and secrets. The production policy's refused delete
+is not exercised by the suite, which uses the lab policy.
 
 ## Uninstall
 

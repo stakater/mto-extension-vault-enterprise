@@ -7,11 +7,12 @@
 #     Template's namespaceSelector-scoped objectFieldRefs)
 #   - CRUD ConfigMaps (the per-SA vault-config ConfigMap, the vault-apps index)
 #   - CRUD the other kinds the tenant chart can render (SecretStores,
-#     ExternalSecrets, NetworkPolicies, PrometheusRules)
+#     ExternalSecrets, PrometheusRules)
 #
-# ESO kinds are granted in two parts: the reap verbs unconditionally, and
-# `create` only while parent.eso is enabled. Gating the whole block deadlocks
-# teardown — see the comment on that rule.
+# Kinds of an optional feature are granted in two parts: the reap verbs
+# unconditionally, and `create` only while the feature is on (parent.eso,
+# tenantValues.monitoring.enabled). Gating the whole block deadlocks teardown —
+# see the comment on the ESO rule.
 {{- $kinds := include "mto-extension-vault-enterprise-bootstrap.vcoKinds" . | fromYamlArray }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -84,12 +85,14 @@ rules:
   - apiGroups: ["templates.v2.stakater.com"]
     resources: ["templateinstances"]
     verbs: ["list"]
-  - apiGroups: ["networking.k8s.io"]
-    resources: ["networkpolicies"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["monitoring.coreos.com"]
     resources: ["prometheusrules"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "update", "patch", "delete"]
+  {{- if eq (include "mto-extension-vault-enterprise-bootstrap.tenantFeature" (dict "ctx" . "feature" "monitoring")) "true" }}
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["prometheusrules"]
+    verbs: ["create"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

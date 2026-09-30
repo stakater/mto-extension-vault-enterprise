@@ -24,7 +24,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -43,6 +45,7 @@ import (
 	"k8s.io/apiextensions-apiserver/pkg/apiserver/schema/pruning"
 	apiservervalidation "k8s.io/apiextensions-apiserver/pkg/apiserver/validation"
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -140,6 +143,13 @@ func main() {
 		// 1. metadata — names, labels, annotations, which OpenAPI never sees.
 		//    Two calls because the apiserver uses two: the accessor for the
 		//    resource's own metadata, schemaobjectmeta for embedded resources.
+		//    Pruning keeps the root metadata as it is, so a misspelt key there
+		//    (metadata.annotaions) passes both calls; the apiserver drops it
+		//    or refuses it, depending on field validation, and never applies it
+		//    as meant. A strict decode into ObjectMeta names it.
+		if err := strictObjectMeta(obj["metadata"]); err != nil {
+			problems = append(problems, fmt.Sprintf("%s: metadata: %v", id, err))
+		}
 		metaObj := &unstructured.Unstructured{Object: admitted}
 		for _, e := range apivalidation.ValidateObjectMetaAccessor(
 			metaObj, true, apivalidation.NameIsDNSSubdomain, field.NewPath("metadata")) {
@@ -184,6 +194,19 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("OK %d %s objects validate against the operator chart CRDs\n", checked, group)
+}
+
+// strictObjectMeta decodes a metadata map into ObjectMeta and fails on a key
+// ObjectMeta does not have.
+func strictObjectMeta(m any) error {
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var om metav1.ObjectMeta
+	return dec.Decode(&om)
 }
 
 // readDocs splits a manifest using apimachinery's reader — the same splitter

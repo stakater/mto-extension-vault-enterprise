@@ -8,8 +8,9 @@ description: |
   needed to manage TemplateInstances, VCO CRs, and the workload-side objects.
 
   Requires: multi-tenant-operator (Tenant CRD), template-operator-v2 >= 0.0.5
-  (child TemplateInstances need namespaceSelector), vault-config-operator with
-  spec.authentication.targetNamespace, and Vault Enterprise (namespaces).
+  (child TemplateInstances need namespaceSelector), vault-config-operator
+  v1.0.3 or later (spec.authentication.targetNamespace), and Vault Enterprise
+  (namespaces).
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

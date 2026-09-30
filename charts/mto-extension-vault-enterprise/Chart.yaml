@@ -9,8 +9,8 @@ description: |
   Rendered once per Tenant CR by the mto-extension-vault-enterprise-bootstrap parent
   Template. Pulled by template-operator-v2 — not installed standalone.
 
-  Requires: vault-config-operator (VCO) with spec.authentication.
-  targetNamespace (upstream issue #291) and a working Namespace kind.
+  Requires: vault-config-operator (VCO) v1.0.3 or later, the first release
+  with spec.authentication.targetNamespace and a working Namespace kind.
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

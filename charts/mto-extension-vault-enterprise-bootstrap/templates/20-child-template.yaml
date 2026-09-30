@@ -1,22 +1,27 @@
 # Child Templates — one per chart component. The parent emits, per MTO Tenant
-# CR, one TemplateInstance of the core Template plus one of the eso Template
-# while ESO is enabled. Each TI pulls the same mto-extension-vault-enterprise chart and
-# renders one slice of it (values.component), so a missing ESO CRD fails only
-# that tenant's .eso TI at server-side dry-run — the core Vault wiring applies
-# regardless.
+# CR with a labelled namespace, one TemplateInstance of the core Template plus
+# one of the eso Template while ESO is enabled. Each TI pulls the same tenant
+# chart and renders one slice of it (values.component), so a missing ESO CRD
+# fails only that tenant's .eso TI at server-side dry-run — the core Vault
+# wiring applies regardless.
 #
-# Both Templates are rendered from one range so they share a parameter list and
-# valuesTemplate and cannot drift; they differ only in the component literal and
-# their status outputs.
-#
-# vaultCABundle is NOT a pass-through parameter — it is a multi-line PEM; set it
-# as a chart-level value of the tenant chart. See charts/README.md.
+# Only tenant, knownTenants, serviceAccounts and deployments differ per tenant;
+# they are the Template's parameters. Every other tenant chart value is
+# install-wide and rendered here, from this chart's values and tenantValues
+# (see the installWideValues helper). t-op-v2 pulls the published tenant chart,
+# so a value not rendered here cannot be set at all.
 {{- /* Only enabled components get a Template. template-operator-v2 re-validates
        every Template on a timer by pulling the chart and dry-run rendering it,
        so an unused Template is a standing chart-pull cost. The predicate below
        must match the parent gotemplate's TI-emission predicate exactly. */ -}}
 {{- $eso := include "mto-extension-vault-enterprise-bootstrap.esoMode" . }}
-{{- $kinds := include "mto-extension-vault-enterprise-bootstrap.vcoKinds" . | fromYamlArray }}
+{{- $installWide := include "mto-extension-vault-enterprise-bootstrap.installWideValues" . }}
+{{- /* The kinds the tenant chart renders. The tenant's Namespace and kv mount
+       are rendered by the parent, so they are reported there. */ -}}
+{{- $childKinds := list }}
+{{- range (include "mto-extension-vault-enterprise-bootstrap.vcoKinds" . | fromYamlArray) }}
+{{- if not (has .kind (list "Namespace" "SecretEngineMount")) }}{{ $childKinds = append $childKinds . }}{{ end }}
+{{- end }}
 {{- $slices := list (dict "component" "core" "nameSuffix" "") }}
 {{- if eq $eso "enabled" }}
 {{- $slices = append $slices (dict "component" "eso" "nameSuffix" "-eso") }}
@@ -41,22 +46,6 @@ spec:
   parameters:
     - name: tenant
       required: true
-    - name: env
-      value: {{ $.Values.parent.env | quote }}
-    - name: vaultServer
-      value: {{ $.Values.parent.vaultServer | quote }}
-    - name: eso
-      value: {{ $eso | quote }}
-    - name: externalSecretRefreshInterval
-      value: {{ $.Values.parent.externalSecretRefreshInterval | quote }}
-    - name: ssoEnabled
-      value: {{ include "mto-extension-vault-enterprise-bootstrap.ssoEnabled" $ | quote }}
-    - name: ssoIssuerUrl
-      value: {{ (include "mto-extension-vault-enterprise-bootstrap.parentSso" $ | fromYaml).issuerUrl | default "" | quote }}
-    - name: sharedTenantName
-      value: {{ $.Values.parent.sharedTenantName | quote }}
-    - name: tenantLabelKey
-      value: {{ $.Values.parent.tenantLabelKey | quote }}
     # Roster of all real tenant names (CSV). Stamped per-child by the parent
     # gotemplate; the chart skips cross-tenant shares whose peer isn't listed.
     - name: knownTenants
@@ -73,7 +62,7 @@ spec:
   # OutputsResolved reports it. policies and k8sAuthRoles scale with workload
   # count, so they reach the cap first.
   outputs:
-    {{- include "mto-extension-vault-enterprise-bootstrap.vcoOutputs" (dict "ns" $.Values.configNamespace "kinds" $kinds) | nindent 4 }}
+    {{- include "mto-extension-vault-enterprise-bootstrap.vcoOutputs" (dict "ns" $.Values.configNamespace "kinds" $childKinds) | nindent 4 }}
 {{- else if eq $slice.component "eso" }}
   # Per-tenant health of the eso slice. Reading the SecretStore as well as the
   # ExternalSecrets distinguishes "this one workload" from "this tenant's Vault
@@ -113,46 +102,13 @@ spec:
         {{- end }}
     releaseName: {{ $.Values.tenantChart.releaseName | quote }}
     version: v4
+    {{- /* The per-tenant values are quoted: a tenant named 1234 must reach the
+           chart as a string, not a number. */}}
     valuesTemplate: |
       component: {{ $slice.component }}
-      tenant: {{ `{{ .parameters.tenant }}` }}
-      env: {{ `{{ .parameters.env }}` }}
-      vaultServer: {{ `{{ .parameters.vaultServer }}` }}
-      eso: {{ `{{ .parameters.eso }}` }}
-      externalSecretRefreshInterval: {{ `{{ .parameters.externalSecretRefreshInterval }}` }}
-      {{- /* Install-wide, so rendered literally rather than threaded through a
-             parameter. t-op-v2 owns rendered CR fields via SSA, so anything not
-             plumbed here is unreachable for every tenant. */}}
-      configNamespace: {{ $.Values.configNamespace }}
-      vco:
-        {{- toYaml $.Values.vco | nindent 8 }}
-      kubernetesAuth:
-        {{- toYaml $.Values.kubernetesAuth | nindent 8 }}
-      {{- /* Built key-by-key and emitted only when at least one is set: an empty
-             `token:` key would reach the tenant chart as a null map and wipe its
-             own defaults for every tenant. period is not plumbed on purpose. */ -}}
-      {{- $ptok := dict }}
-      {{- $src := (($.Values.parent | default dict).token | default dict) }}
-      {{- range $k := (list "type" "ttl" "maxTTL") }}
-      {{- $v := get $src $k }}
-      {{- if $v }}{{- $_ := set $ptok $k $v }}{{- end }}
-      {{- end }}
-      {{- with $ptok }}
-      token:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      tenantLabelKey: {{ `{{ .parameters.tenantLabelKey }}` }}
+      tenant: {{ `{{ .parameters.tenant | quote }}` }}
       knownTenants: {{ `{{ .parameters.knownTenants | quote }}` }}
-      sharedTenant:
-        name: {{ `{{ .parameters.sharedTenantName }}` }}
-      sso:
-        enabled: {{ `{{ .parameters.ssoEnabled }}` }}
-        oidc:
-          issuerUrl: {{ `{{ .parameters.ssoIssuerUrl | quote }}` }}
-        {{- with (include "mto-extension-vault-enterprise-bootstrap.parentSso" $ | fromYaml).allowedRedirectUris }}
-        allowedRedirectUris:
-          {{- toYaml . | nindent 10 }}
-        {{- end }}
       serviceAccounts: {{ `{{ .parameters.serviceAccounts | toJson }}` }}
       deployments: {{ `{{ .parameters.deployments | toJson }}` }}
+      {{- $installWide | nindent 6 }}
 {{- end }}

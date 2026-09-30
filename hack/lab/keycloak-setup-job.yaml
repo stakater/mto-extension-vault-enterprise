@@ -1,0 +1,119 @@
+# Configures realm "mto" in the lab Keycloak, with Keycloak's own kcadm.sh:
+#
+#   client "dex"   confidential; the client Dex's upstream connector logs in with
+#   groups claim   plain names (full.path=false), in the ID token
+#   groups         <tenant>-<tier>s for every tenant in TENANTS, the chart's
+#                  default sso.tenantGroupTemplate "{tenant}-{tier}s"
+#   users          alice  e2e-alpha-editors
+#                  bob    e2e-alpha-viewers
+#                  carol  e2e-beta-admins
+#                  dave   e2e-alpha-audit-reads
+#                  erin   e2e-alpha-admins
+#
+# Idempotent: `make lab-keycloak` deletes the Job and applies this file again.
+# Every secret comes from a Secret through env; none is in this file.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-setup
+  namespace: keycloak
+data:
+  setup.sh: |
+    set -euo pipefail
+    K=/opt/keycloak/bin/kcadm.sh
+    export HOME=/tmp
+    $K config credentials --server http://keycloak.keycloak.svc.cluster.local:8080 --realm master \
+      --user "$ADMIN_USER" --password "$ADMIN_PASSWORD"
+
+    if ! $K get realms/mto >/dev/null 2>&1; then
+      $K create realms -s realm=mto -s enabled=true
+    fi
+
+    redirect='["http://dex.dex.svc.cluster.local:5556/callback"]'
+    cid=$($K get clients -r mto -q clientId=dex --fields id --format csv --noquotes)
+    if [ -z "$cid" ]; then
+      $K create clients -r mto -s clientId=dex -s enabled=true -s protocol=openid-connect \
+        -s publicClient=false -s standardFlowEnabled=true -s directAccessGrantsEnabled=false \
+        -s "redirectUris=$redirect" -s "secret=$DEX_CLIENT_SECRET"
+      cid=$($K get clients -r mto -q clientId=dex --fields id --format csv --noquotes)
+    else
+      $K update "clients/$cid" -r mto -s "redirectUris=$redirect" -s "secret=$DEX_CLIENT_SECRET"
+    fi
+
+    mappers=$($K get "clients/$cid/protocol-mappers/models" -r mto --fields name --format csv --noquotes)
+    if ! grep -qx groups <<<"$mappers"; then
+      $K create "clients/$cid/protocol-mappers/models" -r mto -s name=groups -s protocol=openid-connect \
+        -s protocolMapper=oidc-group-membership-mapper \
+        -s 'config."claim.name"=groups' -s 'config."full.path"=false' \
+        -s 'config."id.token.claim"=true' -s 'config."access.token.claim"=true' \
+        -s 'config."userinfo.token.claim"=true'
+    fi
+
+    for t in $TENANTS; do
+      for tier in admin editor viewer audit-read; do
+        g="$t-${tier}s"
+        id=$($K get groups -r mto -q search="$g" -q exact=true --fields id --format csv --noquotes)
+        [ -n "$id" ] || $K create groups -r mto -s name="$g"
+      done
+    done
+
+    user() { # user <username> <group> <password>
+      local u=$1 g=$2 pw=$3 uid gid
+      uid=$($K get users -r mto -q username="$u" -q exact=true --fields id --format csv --noquotes)
+      if [ -z "$uid" ]; then
+        # email, emailVerified and both names set, so Keycloak asks for no
+        # profile update at the first login: the login form is the only page.
+        $K create users -r mto -s username="$u" -s enabled=true -s email="$u@example.com" \
+          -s emailVerified=true -s firstName="$u" -s lastName=test
+        uid=$($K get users -r mto -q username="$u" -q exact=true --fields id --format csv --noquotes)
+      fi
+      $K set-password -r mto --username "$u" --new-password "$pw"
+      gid=$($K get groups -r mto -q search="$g" -q exact=true --fields id --format csv --noquotes)
+      $K update "users/$uid/groups/$gid" -r mto -s realm=mto -s userId="$uid" -s groupId="$gid" -n
+      echo "user $u in $g"
+    }
+    user alice e2e-alpha-editors "$ALICE_PASSWORD"
+    user bob   e2e-alpha-viewers "$BOB_PASSWORD"
+    user carol e2e-beta-admins   "$CAROL_PASSWORD"
+    user dave  e2e-alpha-audit-reads "$DAVE_PASSWORD"
+    user erin  e2e-alpha-admins  "$ERIN_PASSWORD"
+    echo "realm mto configured"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keycloak-setup
+  namespace: keycloak
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: setup
+          image: quay.io/keycloak/keycloak:26.4.0
+          command: ["/bin/bash", "/setup/setup.sh"]
+          env:
+            # The e2e suite's tenants, and the lab's sample tenants.
+            - { name: TENANTS, value: "e2e-alpha e2e-beta team-a team-b" }
+            - name: ADMIN_USER
+              valueFrom: { secretKeyRef: { name: keycloak-admin, key: username } }
+            - name: ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: keycloak-admin, key: password } }
+            - name: DEX_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: keycloak-dex-client, key: client-secret } }
+            - name: ALICE_PASSWORD
+              valueFrom: { secretKeyRef: { name: keycloak-test-users, key: alice } }
+            - name: BOB_PASSWORD
+              valueFrom: { secretKeyRef: { name: keycloak-test-users, key: bob } }
+            - name: CAROL_PASSWORD
+              valueFrom: { secretKeyRef: { name: keycloak-test-users, key: carol } }
+            - name: DAVE_PASSWORD
+              valueFrom: { secretKeyRef: { name: keycloak-test-users, key: dave } }
+            - name: ERIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: keycloak-test-users, key: erin } }
+          volumeMounts:
+            - { name: setup, mountPath: /setup }
+      volumes:
+        - name: setup
+          configMap: { name: keycloak-setup }

@@ -1,11 +1,16 @@
 {{- if include "vault.componentEnabled" (dict "component" "core" "ctx" .) }}
 {{/*
 Section 7 — per (tenant, tier) SSO role + policy. For each tier in sso.tiers:
-  - Policy sso-<tenant>-<tier> in the tenant's Vault namespace, granting that
+  - Policy sso.<tenant>.<tier> in the tenant's Vault namespace, granting that
     tier's KV access across the tenant.
-  - JWTOIDCAuthEngineRole sso-<tenant>-<tier> on the tenant's oidc/sso mount,
+  - JWTOIDCAuthEngineRole sso.<tenant>.<tier> on the tenant's oidc/sso mount,
     bound to the groups claim "<tenant>-<tier>s" (or whatever
     sso.tenantGroupTemplate renders to).
+
+Every role accepts the audience sso.oidc.clientId. An OIDC ID token's `aud`
+always holds the client ID it was issued to (Dex puts only that there), so the
+audience is not a second value to keep in step: a separate sso.audience that
+differed from the client ID refused every login.
 
 Tier ladder (most → least privilege):
   admin        KV CRUD + delete/undelete/destroy
@@ -13,7 +18,7 @@ Tier ladder (most → least privilege):
   viewer       KV read/list
   audit-read   KV metadata list only; no data reads
 */}}
-{{- if .Values.sso.enabled }}
+{{- if include "vault.on" (dict "name" "sso.enabled" "value" .Values.sso.enabled) }}
 {{- /* Every role below is roleType=oidc, for which Vault requires a non-empty
        allowed_redirect_uris, and the CRD marks allowedRedirectURIs required.
        Emptied in values, it would render as YAML null and fail the whole
@@ -26,6 +31,8 @@ Tier ladder (most → least privilege):
 {{- $labels := include "vault.labels" . }}
 {{- $ssoMount := include "vault.ssoMount" . }}
 {{- range $tier := $.Values.sso.tiers }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" (toString $tier)) }}{{ fail (printf "sso.tiers entry %q is not a DNS label — it is a part of the dot-joined role name sso.<tenant>.<tier>" $tier) }}{{ end }}
+{{- if eq (toString $tier) "fallback" }}{{ fail "sso.tiers entry \"fallback\" is reserved: sso.<tenant>.fallback is the name of the role without a group binding (sso.tenantRoleMapping.fallback), so a tier of that name would collide with it. Rename the tier" }}{{ end }}
 {{- $caps := index $.Values.tierCaps $tier }}
 {{- if not $caps }}{{ fail (printf "sso.tiers includes %q but tierCaps has no entry for it" $tier) }}{{ end }}
 {{- $roleName := include "vault.ssoRoleName" (dict "tenant" $tenant "tier" $tier) }}
@@ -82,7 +89,7 @@ spec:
     - profile
     - groups
   boundAudiences:
-    - {{ $.Values.sso.audience | quote }}
+    - {{ $.Values.sso.oidc.clientId | quote }}
   boundClaims:
     groups:
       - {{ $group | quote }}
@@ -102,13 +109,13 @@ spec:
 
 {{- /* Fallback role — emitted when sso.tenantRoleMapping.fallback names a tier.
        It binds NO groups, so any user with a valid OIDC token can log in with
-       role=sso-<tenant>-fallback and get that tier. */ -}}
+       role=sso.<tenant>.fallback and get that tier. */ -}}
 {{- $fallback := (dig "tenantRoleMapping" "fallback" "deny" $.Values.sso) }}
 {{- if and $fallback (ne $fallback "deny") }}
 {{- if not (has $fallback $.Values.sso.tiers) }}
 {{- fail (printf "sso.tenantRoleMapping.fallback=%q must appear in sso.tiers %v (or be \"deny\")" $fallback $.Values.sso.tiers) }}
 {{- end }}
-{{- $fallbackRoleName := printf "sso-%s-fallback" $tenant }}
+{{- $fallbackRoleName := printf "sso.%s.fallback" $tenant }}
 {{- $fallbackPolicyName := include "vault.ssoRoleName" (dict "tenant" $tenant "tier" $fallback) }}
 ---
 apiVersion: redhatcop.redhat.io/v1alpha1
@@ -130,7 +137,7 @@ spec:
     - profile
     - groups
   boundAudiences:
-    - {{ $.Values.sso.audience | quote }}
+    - {{ $.Values.sso.oidc.clientId | quote }}
   # No boundClaims — any valid OIDC token can use this role.
   tokenPolicies:
     - {{ $fallbackPolicyName }}

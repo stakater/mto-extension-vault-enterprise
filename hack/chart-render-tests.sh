@@ -18,7 +18,9 @@
 #   6. badvalue     — an unknown component fails the render with the helper's message.
 #   7. emission     — the parent emits one TI per enabled slice per tenant, none for a
 #                     tenant without a labelled namespace or named like the shared
-#                     namespace, and a roster of exactly the rendered tenants.
+#                     namespace, and a roster of exactly the rendered tenants. A
+#                     name that is not a DNS label or is over 63 chars is skipped
+#                     and listed in the skipped-tenants ConfigMap.
 #   8. namebudget   — a sliced render fails when the TI name would exceed 63 chars;
 #                     component=all is exempt.
 #   9. templateset  — the bootstrap installs a child Template for exactly the enabled
@@ -57,6 +59,48 @@
 #  25. outputnames  — output and field names are unique within every Template.
 #                     t-op-v2 rejects a field name repeated across outputs and
 #                     then resolves none of them (OutputsResolved=False).
+#  26. namecollide  — no two objects of one render share an identity, and parts
+#                     that glued to one name with hyphens (t-web + api-x vs
+#                     t-web-api + x, and across tenants a + b-c vs a-b + c) now
+#                     give distinct names. Across name families too: tenant sso's
+#                     own Policy for acme/admin is not tenant acme's SSO admin
+#                     Policy sso.acme.admin.
+#  27. tenantname   — a tenant named 1234 renders with every name, label value
+#                     and namespace as a string, in the tenant chart AND the
+#                     parent; a name that is not a DNS label fails the tenant
+#                     chart and is skipped (and reported) by the parent.
+#  28. datalifetime — the tenant chart renders no Namespace and no kv mount; the
+#                     parent renders both for every valid Tenant, including one
+#                     with no labelled namespace, so deleting a tenant's last
+#                     namespace cannot delete its Vault data.
+#  29. tenantvalues — tenantValues reaches every tenant (CA bundle, SecretStore
+#                     caBundle, PrometheusRule, OIDC client), a key the bootstrap
+#                     owns is rejected, and a value containing "{{" is rejected.
+#  30. falsestring  — the STRING "false" turns no feature on. Go templates treat
+#                     any non-empty string as true, and the schema accepts
+#                     "false", so a bare `if .Values.x.enabled` rendered the
+#                     feature; "true" must still render it.
+#  31. ssoissuer    — the bootstrap refuses SSO without an issuer URL, instead of
+#                     installing cleanly and failing every tenant's render.
+#  32. alertlabels  — the ESO alert selects only labels ESO exports (condition,
+#                     status, namespace) and names the tenant's namespaces.
+#  33. removedkeys  — a values file still setting the removed networkPolicy,
+#                     sso.oidc.perTenantClient or sso.audience fails, in the
+#                     tenant chart and in tenantValues; the shared SSO client
+#                     still renders.
+#  34. release      — hack/release-chart.sh, against a stub helm: a published
+#                     version is skipped (no push), an explicit not-found is
+#                     pushed, anything else fails without pushing. Run under
+#                     bash -e, as CI's GNU make runs recipes.
+#  35. bumpcheck    — hack/version-bump-check.sh in a scratch git repo: a changed
+#                     chart without a version bump fails; with a bump, unchanged,
+#                     or new, it passes.
+#  36. ssotiers     — an SSO tier that is not a DNS label, or is named "fallback"
+#                     (the name of the role without a group binding), fails the
+#                     render with its own message; the default tiers render.
+#  37. ssoaudience  — every SSO role, the fallback role too, accepts exactly
+#                     sso.oidc.clientId as its audience, for the default client
+#                     and for another one. An ID token's aud is the client ID.
 #
 # The parent gotemplate is rendered through helm's tpl — an approximation of
 # t-op-v2's text/template+Sprig engine that is exact for the constructs it uses.
@@ -102,6 +146,8 @@ yqs() {
     || { echo "FAIL  infra — yq failed on $3: $(first "$WORK/yq.err")"; exit 1; }
   printf -v "$1" '%s' "$__o"
 }
+# lines <text>: the number of non-empty lines, for counts over a yqs result.
+lines() { local n; n="$(printf '%s' "$1" | grep -c . || true)"; echo "${n:-0}"; }
 
 render() { # render <component> <valuesfile> [extra helm args...] -> manifest on stdout
   local c="$1" v="$2"; shift 2
@@ -150,7 +196,10 @@ check exclusivity "$ex_ok" "$ex_detail"
 
 # 5. empty
 if render eso "$FIXTURES/values-no-optins.yaml" > "$WORK/empty.yaml" 2>"$WORK/empty.err"; then
-  emptycount="$(normalize < "$WORK/empty.yaml" | grep -c '^kind:' || true)"
+  # yqs, not `yq | grep -c || true`: a yq failure then stops the run instead of
+  # counting as zero objects, which is this check's pass condition.
+  yqs emptykinds 'select(.kind != null) | .kind' "$WORK/empty.yaml"
+  emptycount="$(lines "$emptykinds")"
   [ "$emptycount" -eq 0 ] && check empty 0 || check empty 1 "expected 0 objects, got $emptycount"
 else
   check empty 1 "render itself failed: $(first "$WORK/empty.err")"
@@ -172,18 +221,14 @@ printf 'apiVersion: v2\nname: shim\nversion: 0.0.1\n' > "$WORK/shim/Chart.yaml"
 printf '{{ tpl ($.Files.Get "files/parent-gotemplate.tpl") (dict "parameters" .Values.parameters) }}\n' > "$WORK/shim/templates/render.yaml"
 cat > "$WORK/shim/values.yaml" <<'EOF'
 parameters:
-  env: dev
   configNamespace: vault-config
   childTemplateName: mto-extension-vault-enterprise
   tenantLabelKey: stakater.com/tenant
   sharedTenantName: shared
-  ssoEnabled: "false"
-  ssoIssuerUrl: ""
   eso: enabled
-  externalSecretRefreshInterval: "1h"
   vcoAuthPath: kubernetes
-  vcoRole: vco-admin
-  vcoServiceAccount: vco-admin
+  vcoRole: vco-role
+  vcoServiceAccount: vco-sa
   vcoNamespace: ""
   k8sAuthPath: kubernetes
   k8sAuthName: workloads
@@ -192,16 +237,25 @@ parameters:
   tenants:
     - metadata: { name: team-a }
     - metadata: { name: team-b }
-    # no labelled namespace -> skipped
+    # no labelled namespace -> Vault namespace and kv, no child TI
     - metadata: { name: empty-tenant }
-    # named like the shared namespace -> skipped, even with a namespace
+    # named like the shared namespace -> skipped and reported
     - metadata: { name: shared }
+    # not a DNS label -> skipped and reported
+    - metadata: { name: has.dot }
+    # a DNS label of 64 characters: over the 63-char label value cap -> skipped and reported
+    - metadata: { name: tenant-name-of-sixty-four-characters-which-is-one-over-the-cap-x }
+    # all digits: a valid DNS label that YAML reads as a number unless quoted
+    - metadata: { name: "1234" }
   # The gate counts namespaces carrying tenantLabelKey. The unlabelled and
   # foreign-labelled entries prove the filter is not counting the whole list.
   tenantNamespaces:
     - metadata: { name: team-a-dev, labels: { stakater.com/tenant: team-a } }
     - metadata: { name: team-b-dev, labels: { stakater.com/tenant: team-b } }
     - metadata: { name: shared-dev, labels: { stakater.com/tenant: shared } }
+    - metadata: { name: has-dot-dev, labels: { stakater.com/tenant: has.dot } }
+    - metadata: { name: long-dev, labels: { stakater.com/tenant: tenant-name-of-sixty-four-characters-which-is-one-over-the-cap-x } }
+    - metadata: { name: n1234-dev, labels: { stakater.com/tenant: "1234" } }
     - metadata: { name: no-label-ns }
     - metadata: { name: someone-elses-ns, labels: { stakater.com/tenant: other-tenant } }
 EOF
@@ -210,8 +264,9 @@ emit() { # emit <eso> [extra --set args] -> rendered parent output
   "$HELM" template shim "$WORK/shim" --set "parameters.eso=$eso" "$@"
 }
 em_ok=0; em_detail=""
-for em in "enabled:mto-extension-vault-enterprise-team-a->mto-extension-vault-enterprise mto-extension-vault-enterprise-team-a.eso->mto-extension-vault-enterprise-eso mto-extension-vault-enterprise-team-b->mto-extension-vault-enterprise mto-extension-vault-enterprise-team-b.eso->mto-extension-vault-enterprise-eso" \
-          "disabled:mto-extension-vault-enterprise-team-a->mto-extension-vault-enterprise mto-extension-vault-enterprise-team-b->mto-extension-vault-enterprise"; do
+P=mto-extension-vault-enterprise
+for em in "enabled:$P-team-a->$P $P-team-a.eso->$P-eso $P-team-b->$P $P-team-b.eso->$P-eso $P-1234->$P $P-1234.eso->$P-eso" \
+          "disabled:$P-team-a->$P $P-team-b->$P $P-1234->$P"; do
   eso="${em%%:*}"; want="$(printf '%s\n' ${em#*:} | sort | tr '\n' ' ')"
   emit "$eso" > "$WORK/emit-$eso.yaml" 2>"$WORK/emit.err" \
     || { em_ok=1; em_detail="$em_detail [eso=$eso: parent render failed: $(first "$WORK/emit.err")]"; continue; }
@@ -219,10 +274,22 @@ for em in "enabled:mto-extension-vault-enterprise-team-a->mto-extension-vault-en
   [ "$got" = "$want" ] || { em_ok=1; em_detail="$em_detail [eso=$eso: want $want got $got]"; }
 done
 roster="$("$YQ" e -N 'select(.kind == "TemplateInstance") | .spec.parameters[] | select(.name == "knownTenants") | .value' "$WORK/emit-enabled.yaml" | sort -u)"
-[ "$roster" = "team-a,team-b" ] || { em_ok=1; em_detail="$em_detail [knownTenants roster: want team-a,team-b got '$roster']"; }
-shared_kinds="$("$YQ" e -N 'select(.apiVersion == "redhatcop.redhat.io/v1alpha1") | .kind + "/" + .metadata.name' "$WORK/emit-enabled.yaml" | sort | tr '\n' ' ')"
-[ "$shared_kinds" = "AuthEngineMount/shared-kubernetes KubernetesAuthEngineConfig/shared-kubernetes-config Namespace/shared SecretEngineMount/shared-kv " ] \
-  || { em_ok=1; em_detail="$em_detail [shared scaffolding: got $shared_kinds]"; }
+[ "$roster" = "team-a,team-b,1234" ] || { em_ok=1; em_detail="$em_detail [knownTenants roster: want team-a,team-b,1234 got '$roster']"; }
+parent_kinds="$("$YQ" e -N 'select(.apiVersion == "redhatcop.redhat.io/v1alpha1") | .kind + "/" + .metadata.name' "$WORK/emit-enabled.yaml" | sort | tr '\n' ' ')"
+want_kinds="$(printf '%s\n' AuthEngineMount/shared-kubernetes KubernetesAuthEngineConfig/shared-kubernetes-config \
+  Namespace/shared SecretEngineMount/shared-kv \
+  Namespace/team-a SecretEngineMount/team-a-kv Namespace/team-b SecretEngineMount/team-b-kv \
+  Namespace/empty-tenant SecretEngineMount/empty-tenant-kv Namespace/1234 SecretEngineMount/1234-kv | sort | tr '\n' ' ')"
+[ "$parent_kinds" = "$want_kinds" ] || { em_ok=1; em_detail="$em_detail [parent VCO objects: want $want_kinds got $parent_kinds]"; }
+yqs skipped 'select(.kind == "ConfigMap" and .metadata.name == "mto-extension-vault-enterprise-skipped-tenants") | .data | keys | .[]' "$WORK/emit-enabled.yaml"
+want_skipped="has.dot shared tenant-name-of-sixty-four-characters-which-is-one-over-the-cap-x "
+[ "$(sort <<<"$skipped" | tr '\n' ' ')" = "$want_skipped" ] || { em_ok=1; em_detail="$em_detail [skipped-tenants ConfigMap lists '$(tr '\n' ' ' <<<"$skipped")', want $want_skipped]"; }
+# Counterweight: with nothing to skip, no ConfigMap is rendered.
+printf 'parameters:\n  tenants:\n    - metadata: { name: team-a }\n' > "$WORK/emit-clean-values.yaml"
+emit enabled -f "$WORK/emit-clean-values.yaml" > "$WORK/emit-clean.yaml" 2>"$WORK/emit.err" \
+  || { em_ok=1; em_detail="$em_detail [parent render with valid tenants failed: $(first "$WORK/emit.err")]"; }
+yqs cm 'select(.kind == "ConfigMap") | .metadata.name' "$WORK/emit-clean.yaml"
+[ -z "$cm" ] || { em_ok=1; em_detail="$em_detail [skipped-tenants ConfigMap rendered with nothing skipped]"; }
 check emission "$em_ok" "$em_detail"
 
 # 8. namebudget — "mto-extension-vault-enterprise-" is 31 chars: core ≤32, .eso ≤28.
@@ -253,7 +320,9 @@ for ts in "enabled:mto-extension-vault-enterprise mto-extension-vault-enterprise
   got="$("$YQ" e -N 'select(.kind == "Template") | .metadata.name' "$WORK/boot-$eso.yaml" | sort | tr '\n' ' ')"
   [ "$got" = "$want" ] || { ts_ok=1; ts_detail="$ts_detail [eso=$eso: want $want got $got]"; }
   # every templateRef the parent can emit for this toggle resolves to a Template
-  for ref in $("$YQ" e -N 'select(.kind == "TemplateInstance") | .spec.templateRef.name' "$WORK/emit-$eso.yaml" | sort -u); do
+  yqs refs 'select(.kind == "TemplateInstance") | .spec.templateRef.name' "$WORK/emit-$eso.yaml"
+  [ -n "$refs" ] || { ts_ok=1; ts_detail="$ts_detail [eso=$eso: the parent emitted no templateRef — the check proves nothing]"; }
+  for ref in $(sort -u <<<"$refs"); do
     grep -qx "$ref" <(printf '%s\n' $got) || { ts_ok=1; ts_detail="$ts_detail [eso=$eso: parent emits templateRef $ref with no Template]"; }
   done
 done
@@ -274,6 +343,19 @@ for kind in secretstores externalsecrets; do
     grep -qx "external-secrets.io/$kind $v" "$WORK/rbac-off" || { rg_ok=1; rg_detail="$rg_detail [$kind $v missing with ESO off — TI teardown would wedge]"; }
   done
 done
+# NetworkPolicy and PrometheusRule `create` follow their tenantValues toggles.
+"$HELM" template b "$BOOTSTRAP" -n "$NS" --set tenantValues.monitoring.enabled=true > "$WORK/boot-features.yaml" 2>"$WORK/boot.err" \
+  || { rg_ok=1; rg_detail="$rg_detail [bootstrap with features on failed: $(first "$WORK/boot.err")]"; }
+rbac_atoms "$WORK/boot-features.yaml" > "$WORK/rbac-features"
+for gk in monitoring.coreos.com/prometheusrules; do
+  grep -qx "$gk create" "$WORK/rbac-features" || { rg_ok=1; rg_detail="$rg_detail [$gk create missing with its feature on]"; }
+  grep -qx "$gk create" "$WORK/rbac-on" && { rg_ok=1; rg_detail="$rg_detail [$gk create present with its feature off]"; }
+  grep -qx "$gk delete" "$WORK/rbac-on" || { rg_ok=1; rg_detail="$rg_detail [$gk delete missing with its feature off — teardown would wedge]"; }
+done
+if "$HELM" template b "$BOOTSTRAP" -n "$NS" --set-string tenantValues.monitoring.enabled=yes > /dev/null 2>"$WORK/boot.err"; then
+  rg_ok=1; rg_detail="$rg_detail [tenantValues.monitoring.enabled=yes accepted]"
+fi
+grep -q 'networking.k8s.io/networkpolicies' "$WORK/rbac-features" && { rg_ok=1; rg_detail="$rg_detail [NetworkPolicy RBAC still granted after the feature was removed]"; }
 check rbacgate "$rg_ok" "$rg_detail"
 
 # 11. rbaccover — every redhatcop kind any render emits, lower-cased plural
@@ -312,10 +394,18 @@ tg_case() { # tg_case <chart-dir-name> <values-arg> <label>
 tg_case boot "--set parent.eso=true" "parent.eso=true"
 tg_case boot "--set parent.sso.enabled=yes" "parent.sso.enabled=yes"
 tg_case boot "--set-string sync.mode=on" "sync.mode=on"
-tg_case tenant "--set-string sso.enabled=on --set tenant=t" "sso.enabled=on"
+tg_case tenant "--set-string sso.enabled=on --set tenant=t --set sso.oidc.issuerUrl=https://idp" "sso.enabled=on"
+# With the schema removed, the refusal must come from the guard itself — not
+# from a side effect such as a missing issuer URL, which is how this case passed
+# while the tenant chart had no guard at all.
+if "$HELM" template x "$WORK/noschema/tenant" -n "$NS" --set tenant=t --set-string sso.enabled=on --set sso.oidc.issuerUrl=https://idp > /dev/null 2>"$WORK/tg.err"; then
+  tg_ok=1; tg_detail="$tg_detail [tenant sso.enabled=on without schema rendered]"
+else
+  grep -q 'sso.enabled must be true or false' "$WORK/tg.err" || { tg_ok=1; tg_detail="$tg_detail [tenant sso.enabled=on without schema was not refused by the guard: $(first "$WORK/tg.err")]"; }
+fi
 # Positive controls: canonical values render in both variants.
 for variant in noschema notpl; do
-  "$HELM" template x "$WORK/$variant/boot" -n "$NS" --set parent.eso=disabled --set-string parent.sso.enabled=true > /dev/null 2>"$WORK/tg.err" \
+  "$HELM" template x "$WORK/$variant/boot" -n "$NS" --set parent.eso=disabled --set-string parent.sso.enabled=true --set parent.sso.issuerUrl=https://idp > /dev/null 2>"$WORK/tg.err" \
     || { tg_ok=1; tg_detail="$tg_detail [canonical bootstrap values rejected with $variant: $(first "$WORK/tg.err")]"; }
 done
 check toggles "$tg_ok" "$tg_detail"
@@ -323,7 +413,7 @@ check toggles "$tg_ok" "$tg_detail"
 # 13. subread — app-a (editor) subscribes to team-a-tools; app-d (audit-read) to team-a-dev
 sr_ok=0; sr_detail=""
 pol() { "$YQ" e -N "select(.kind == \"Policy\" and .metadata.name == \"$1\") | .spec.policy" "$WORK/all.raw"; }
-pol team-a-team-a-dev-app-a > "$WORK/pol-a"
+pol kv.team-a.team-a-dev.app-a > "$WORK/pol-a"
 grep -q 'path "kv/metadata/dev/_shared/from-team-a-tools/\*" { capabilities = \["read", "list"\] }' "$WORK/pol-a" \
   || { sr_ok=1; sr_detail="$sr_detail [editor subscriber metadata grant is not read/list]"; }
 grep -qE 'path "kv/data/dev/_shared/from-team-a-tools/\*" +{ capabilities = \["read", "list"\] }' "$WORK/pol-a" \
@@ -332,7 +422,7 @@ grep 'from-team-a-tools' "$WORK/pol-a" > "$WORK/pol-a-sub" \
   || { sr_ok=1; sr_detail="$sr_detail [no from-team-a-tools grant at all]"; }
 grep -qE '"(create|update|patch|delete)"' "$WORK/pol-a-sub" \
   && { sr_ok=1; sr_detail="$sr_detail [a write capability on the producer's prefix]"; }
-pol team-a-team-a-tools-app-d > "$WORK/pol-d"
+pol kv.team-a.team-a-tools.app-d > "$WORK/pol-d"
 grep -q 'path "kv/metadata/dev/_shared/from-team-a-dev/\*" { capabilities = \["list"\] }' "$WORK/pol-d" \
   || { sr_ok=1; sr_detail="$sr_detail [audit-read subscriber metadata grant is not list-only]"; }
 grep -q 'kv/data/dev/_shared/from-team-a-dev/' "$WORK/pol-d" \
@@ -349,23 +439,27 @@ for pair in \
   "g-reserved:is not a valid app name" "g-claimed:claimed by more than one" "g-claimer:claimed by more than one" \
   "g-orphan-share:so it grants nothing" "default:cannot be granted Vault access" "g-foreign-ns:is not a namespace of tenant" \
   "g-unknown-key:unknown annotation" "g-bad-bool:must be" "g-app-only:no app identity is registered" \
-  "g.dotted:cannot be used with Vault"; do
+  "g.dotted:cannot be used with Vault" "g-share-err:is not a known tier"; do
   sa="${pair%%:*}"; msg="${pair#*:}"
   yqs err "select(.kind == \"ConfigMap\" and .metadata.name == \"vault-config-$sa.error\") | .data.ERROR" "$WORK/guards.yaml"
   grep -q -- "$msg" <<<"$err" \
     || { gd_ok=1; gd_detail="$gd_detail [$sa: no error ConfigMap saying '$msg']"; }
-  yqs hit "select(.kind == \"Policy\" and (.metadata.name | test(\"-$sa\$\"))) | .metadata.name" "$WORK/guards.yaml"
+  yqs hit "select(.kind == \"Policy\" and (.metadata.name | test(\"[.]$sa\$\"))) | .metadata.name" "$WORK/guards.yaml"
   [ -n "$hit" ] \
     && { gd_ok=1; gd_detail="$gd_detail [$sa: a Policy rendered despite the error]"; }
 done
+# The share templates' own error gate: a rejected ServiceAccount with share
+# annotations gets no share Policy, Role or SecretStore.
+yqs sharehit 'select(.metadata.name | test("g-share-err")) | select(.kind != "ConfigMap") | .kind + "/" + .metadata.name' "$WORK/guards.yaml"
+[ -z "$sharehit" ] || { gd_ok=1; gd_detail="$gd_detail [a rejected ServiceAccount still got share objects: $(tr '\n' ' ' <<<"$sharehit")]"; }
 # Positive controls in the other namespace.
 for sa in good-sa sub-ok hostile-sa; do
-  yqs hit "select(.kind == \"Policy\" and .metadata.name == \"team-a-team-a-prod-$sa\") | .metadata.name" "$WORK/guards.yaml"
+  yqs hit "select(.kind == \"Policy\" and .metadata.name == \"kv.team-a.team-a-prod.$sa\") | .metadata.name" "$WORK/guards.yaml"
   [ -n "$hit" ] \
     || { gd_ok=1; gd_detail="$gd_detail [$sa: correct SA rendered no Policy — one namespace's error froze another]"; }
 done
 # Deployment-level cases.
-es_count() { "$YQ" e -N "select(.kind == \"ExternalSecret\" and .metadata.name == \"$1\") | .metadata.name" "$WORK/guards.yaml" | grep -c . || true; }
+es_count() { local es; yqs es "select(.kind == \"ExternalSecret\" and .metadata.name == \"$1\") | .metadata.name" "$WORK/guards.yaml"; lines "$es"; }
 [ "$(es_count good-sa-db)" = 1 ] || { gd_ok=1; gd_detail="$gd_detail [identical asks were not deduped to ONE ExternalSecret]"; }
 [ "$(es_count good-sa-cfg)" = 0 ] || { gd_ok=1; gd_detail="$gd_detail [clashing asks rendered an ExternalSecret]"; }
 [ "$(es_count sub-ok-y)" = 1 ] || { gd_ok=1; gd_detail="$gd_detail [a granted subscription rendered no ExternalSecret]"; }
@@ -395,18 +489,27 @@ tn_ok=0; tn_detail=""
 [ -s "$WORK/targets" ] || { tn_ok=1; tn_detail="$tn_detail [no VCO CRs rendered]"; }
 while read -r obj target; do
   case "$obj" in
-    Namespace/*) [ "$target" = "<none>" ] || { tn_ok=1; tn_detail="$tn_detail [$obj carries targetNamespace $target]"; } ;;
-    */share-*)   [ "$target" = shared ]   || { tn_ok=1; tn_detail="$tn_detail [$obj targets $target, want shared]"; } ;;
+    Namespace/*) tn_ok=1; tn_detail="$tn_detail [the tenant chart rendered $obj — the parent owns it]" ;;
+    */share.*)   [ "$target" = shared ]   || { tn_ok=1; tn_detail="$tn_detail [$obj targets $target, want shared]"; } ;;
     *)           [ "$target" = team-a ]   || { tn_ok=1; tn_detail="$tn_detail [$obj targets $target, want team-a]"; } ;;
   esac
 done < "$WORK/targets"
 "$YQ" e -N 'select(.apiVersion == "redhatcop.redhat.io/v1alpha1") | .kind + "/" + .metadata.name + " " + (.spec.authentication.targetNamespace // "<none>")' "$WORK/emit-enabled.yaml" > "$WORK/ptargets"
 while read -r obj target; do
   case "$obj" in
-    Namespace/*) [ "$target" = "<none>" ] || { tn_ok=1; tn_detail="$tn_detail [parent $obj carries targetNamespace $target]"; } ;;
-    *)           [ "$target" = shared ]   || { tn_ok=1; tn_detail="$tn_detail [parent $obj targets $target, want shared]"; } ;;
+    Namespace/*)          [ "$target" = "<none>" ] || { tn_ok=1; tn_detail="$tn_detail [parent $obj carries targetNamespace $target]"; } ;;
+    */shared-*)           [ "$target" = shared ]   || { tn_ok=1; tn_detail="$tn_detail [parent $obj targets $target, want shared]"; } ;;
+    SecretEngineMount/*)  [ "$target" = "${obj#SecretEngineMount/}" ] || [ "$target-kv" = "${obj#SecretEngineMount/}" ] \
+                            || { tn_ok=1; tn_detail="$tn_detail [parent $obj targets $target, want its own tenant]"; } ;;
+    *)                    tn_ok=1; tn_detail="$tn_detail [unexpected parent object $obj]" ;;
   esac
 done < "$WORK/ptargets"
+# role and serviceAccount each land in their own field (values-full sets them
+# to different values, so a swap cannot hide).
+yqs rolesa 'select(.apiVersion == "redhatcop.redhat.io/v1alpha1") | .spec.authentication.role + "/" + .spec.authentication.serviceAccount.name' "$WORK/all.raw"
+[ "$(sort -u <<<"$rolesa")" = "vco-role/vco-sa" ] || { tn_ok=1; tn_detail="$tn_detail [authentication role/serviceAccount: $(sort -u <<<"$rolesa" | tr '\n' ' '), want vco-role/vco-sa]"; }
+yqs prolesa 'select(.apiVersion == "redhatcop.redhat.io/v1alpha1") | .spec.authentication.role + "/" + .spec.authentication.serviceAccount.name' "$WORK/emit-enabled.yaml"
+[ "$(sort -u <<<"$prolesa")" = "vco-role/vco-sa" ] || { tn_ok=1; tn_detail="$tn_detail [parent authentication role/serviceAccount: $(sort -u <<<"$prolesa" | tr '\n' ' '), want vco-role/vco-sa]"; }
 # Every CR logs in the same way, in the tenant chart and in the parent.
 auths="$({ "$YQ" e -N -o=json -I=0 'select(.apiVersion == "redhatcop.redhat.io/v1alpha1") | .spec.authentication | del(.targetNamespace)' "$WORK/all.raw"; } | sort -u | wc -l | tr -d ' ')"
 [ "$auths" = 1 ] || { tn_ok=1; tn_detail="$tn_detail [$auths distinct login blocks in the tenant render, want 1]"; }
@@ -416,7 +519,8 @@ check targetns "$tn_ok" "$tn_detail"
 na_ok=0; na_detail=""
 bad_cm="$("$YQ" e -N 'select(.kind == "ConfigMap" and (.metadata.name | test("^vault-config-")) and (.data | has("VAULT_NAMESPACE"))) | select(.data.VAULT_NAMESPACE != "org/team-a") | .metadata.name' "$WORK/all.raw")"
 [ -z "$bad_cm" ] || { na_ok=1; na_detail="$na_detail [VAULT_NAMESPACE wrong in: $bad_cm]"; }
-cms="$("$YQ" e -N 'select(.kind == "ConfigMap" and (.data | has("VAULT_NAMESPACE"))) | .metadata.name' "$WORK/all.raw" | grep -c . || true)"
+yqs cmnames 'select(.kind == "ConfigMap" and (.data | has("VAULT_NAMESPACE"))) | .metadata.name' "$WORK/all.raw"
+cms="$(lines "$cmnames")"
 [ "$cms" -gt 0 ] || { na_ok=1; na_detail="$na_detail [no ConfigMap carries VAULT_NAMESPACE]"; }
 "$YQ" e -N 'select(.kind == "SecretStore") | .metadata.name + " " + .spec.provider.vault.namespace' "$WORK/all.raw" > "$WORK/stores"
 [ -s "$WORK/stores" ] || { na_ok=1; na_detail="$na_detail [no SecretStores rendered]"; }
@@ -460,15 +564,21 @@ if "$HELM" template x "$WORK/noschema/tenant" -n "$NS" -f "$FIXTURES/values-full
 else
   grep -q 'must be an integer number of seconds' "$WORK/tsx.err" || { tsx_ok=1; tsx_detail="$tsx_detail [token.ttl=1h failed without the helper message: $(first "$WORK/tsx.err")]"; }
 fi
-if "$HELM" template x "$CHART" -n "$NS" -f "$FIXTURES/values-full.yaml" --set-string token.ttl=1h > /dev/null 2>"$WORK/tsx.err"; then
+# The schema on its own, templates stripped: with them present the template
+# guard also fails the render, and this passed with the schema rule deleted.
+if "$HELM" template x "$WORK/notpl/tenant" -n "$NS" --set tenant=t --set-string token.ttl=1h > /dev/null 2>"$WORK/tsx.err"; then
   tsx_ok=1; tsx_detail="$tsx_detail [the schema accepted token.ttl=1h]"
 fi
+"$HELM" template x "$WORK/notpl/tenant" -n "$NS" --set tenant=t --set token.ttl=900 > /dev/null 2>"$WORK/tsx.err" \
+  || { tsx_ok=1; tsx_detail="$tsx_detail [the schema refused token.ttl=900: $(first "$WORK/tsx.err")]"; }
 check tokenseconds "$tsx_ok" "$tsx_detail"
 
 # 19. tokentype
 tt_ok=0; tt_detail=""
-roles="$("$YQ" e -N 'select(.kind == "KubernetesAuthEngineRole") | .metadata.name' "$WORK/all.raw" | grep -c . || true)"
-typed="$("$YQ" e -N 'select(.kind == "KubernetesAuthEngineRole") | .spec.tokenType' "$WORK/all.raw" | grep -cx service || true)"
+yqs rolenames 'select(.kind == "KubernetesAuthEngineRole") | .metadata.name' "$WORK/all.raw"
+yqs roletypes 'select(.kind == "KubernetesAuthEngineRole") | .spec.tokenType' "$WORK/all.raw"
+roles="$(lines "$rolenames")"
+typed="$(lines "$(grep -x service <<<"$roletypes" || true)")"
 [ "$roles" -gt 0 ] || { tt_ok=1; tt_detail="$tt_detail [no roles rendered]"; }
 [ "$typed" = "$roles" ] || { tt_ok=1; tt_detail="$tt_detail [$typed of $roles roles pin tokenType service]"; }
 if "$HELM" template x "$WORK/noschema/tenant" -n "$NS" -f "$FIXTURES/values-full.yaml" --set token.type=batch > /dev/null 2>"$WORK/tt.err"; then
@@ -521,7 +631,8 @@ check ssoredirect "$so_ok" "$so_detail"
 # 22. ssorootlist
 sl_ok=0; sl_detail=""
 n_sso=0
-for p in $("$YQ" e -N 'select(.kind == "Policy" and (.metadata.name | test("^sso-"))) | .metadata.name' "$WORK/all.raw"); do
+yqs ssopols 'select(.kind == "Policy" and (.metadata.name | test("^sso[.]"))) | .metadata.name' "$WORK/all.raw"
+for p in $ssopols; do
   n_sso=$((n_sso + 1))
   yqs body "select(.kind == \"Policy\" and .metadata.name == \"$p\") | .spec.policy" "$WORK/all.raw"
   grep -q 'path "kv/metadata" { capabilities = \["list"\] }' <<<"$body" || { sl_ok=1; sl_detail="$sl_detail [$p cannot list the kv root]"; }
@@ -593,5 +704,302 @@ for eso in enabled disabled; do
   done
 done
 check outputnames "$on_ok" "$on_detail"
+
+# 26. namecollide
+nc_ok=0; nc_detail=""
+# nc_ids <manifest> <ids-out>: sorted identities. On its own line, so a yq failure
+# stops the run instead of reading as "no duplicates".
+nc_ids() {
+  normalize < "$1" > "$1.norm" || { echo "FAIL  infra — yq failed normalizing $1"; exit 1; }
+  identities "$1.norm" > "$2" || { echo "FAIL  infra — yq failed listing identities of $1"; exit 1; }
+}
+for fx in full guards no-optins no-workloads; do
+  render all "$FIXTURES/values-$fx.yaml" > "$WORK/nc.yaml" 2>"$WORK/nc.err" || { nc_ok=1; nc_detail="$nc_detail [$fx: render failed]"; continue; }
+  nc_ids "$WORK/nc.yaml" "$WORK/nc.ids"
+  dups="$(uniq -d "$WORK/nc.ids" | tr '\n' ' ')"
+  [ -z "$dups" ] || { nc_ok=1; nc_detail="$nc_detail [$fx: duplicate identities: $dups]"; }
+done
+cat > "$WORK/coll.yaml" <<'YAML'
+tenant: t
+serviceAccounts:
+  - metadata: {name: api-x, namespace: t-web, annotations: {vault.stakater.com/kv: "true", vault.stakater.com/tier: editor}}
+  - metadata: {name: x, namespace: t-web-api, annotations: {vault.stakater.com/kv: "true", vault.stakater.com/tier: viewer}}
+YAML
+render all "$WORK/coll.yaml" > "$WORK/coll.out" 2>"$WORK/coll.err" || { nc_ok=1; nc_detail="$nc_detail [collision fixture failed to render: $(first "$WORK/coll.err")]"; }
+yqs pnames 'select(.kind == "Policy") | .metadata.name' "$WORK/coll.out"
+[ "$(sort -u <<<"$pnames" | wc -l | tr -d ' ')" = 2 ] || { nc_ok=1; nc_detail="$nc_detail [t-web/api-x and t-web-api/x: $(tr '\n' ' ' <<<"$pnames")]"; }
+# nc_pair <label> <values-a> <values-b>: two tenants' core renders, which both
+# land in configNamespace, share no identity. Each must render a Policy, or the
+# check passes on an empty render. The names are not pinned here: a naming
+# regression must fail as a collision, not as a missing name.
+nc_pair() {
+  local pa pb d
+  render core "$2" > "$WORK/nca.yaml" 2>"$WORK/nca.err" || { nc_ok=1; nc_detail="$nc_detail [$1: first render failed: $(first "$WORK/nca.err")]"; return; }
+  render core "$3" > "$WORK/ncb.yaml" 2>"$WORK/ncb.err" || { nc_ok=1; nc_detail="$nc_detail [$1: second render failed: $(first "$WORK/ncb.err")]"; return; }
+  yqs pa 'select(.kind == "Policy") | .metadata.name' "$WORK/nca.yaml"
+  yqs pb 'select(.kind == "Policy") | .metadata.name' "$WORK/ncb.yaml"
+  [ -n "$pa" ] && [ -n "$pb" ] || { nc_ok=1; nc_detail="$nc_detail [$1: a render has no Policy — the check proves nothing]"; return; }
+  cat "$WORK/nca.yaml" "$WORK/ncb.yaml" > "$WORK/ncab.yaml"
+  nc_ids "$WORK/ncab.yaml" "$WORK/ncab.ids"
+  d="$(uniq -d "$WORK/ncab.ids" | tr '\n' ' ')"
+  [ -z "$d" ] || { nc_ok=1; nc_detail="$nc_detail [$1: two tenants render the same objects: $d]"; }
+}
+# Across tenants: tenant a, namespace b-c vs tenant a-b, namespace c.
+printf 'tenant: a\nserviceAccounts:\n  - metadata: {name: d, namespace: b-c, annotations: {vault.stakater.com/kv: "true", vault.stakater.com/tier: editor}}\n' > "$WORK/xa.yaml"
+printf 'tenant: a-b\nserviceAccounts:\n  - metadata: {name: d, namespace: c, annotations: {vault.stakater.com/kv: "true", vault.stakater.com/tier: editor}}\n' > "$WORK/xb.yaml"
+nc_pair "a/b-c vs a-b/c" "$WORK/xa.yaml" "$WORK/xb.yaml"
+# Across name families: tenant sso's own Policy for namespace acme and
+# ServiceAccount admin vs tenant acme's SSO admin Policy (sso.acme.admin).
+printf 'tenant: sso\nserviceAccounts:\n  - metadata: {name: admin, namespace: acme, annotations: {vault.stakater.com/kv: "true", vault.stakater.com/tier: editor}}\n' > "$WORK/fa.yaml"
+printf 'tenant: acme\nsso: {enabled: true, oidc: {issuerUrl: "https://idp.example"}}\n' > "$WORK/fb.yaml"
+nc_pair "sso/acme/admin vs acme SSO admin" "$WORK/fa.yaml" "$WORK/fb.yaml"
+check namecollide "$nc_ok" "$nc_detail"
+
+# 27. tenantname
+tnm_ok=0; tnm_detail=""
+render core "$FIXTURES/values-full.yaml" --set-string tenant=1234 --set knownTenants=1234 > "$WORK/num.yaml" 2>"$WORK/num.err" \
+  || { tnm_ok=1; tnm_detail="$tnm_detail [tenant 1234 did not render: $(first "$WORK/num.err")]"; }
+yqs nonstr '(.. | select(has("name")) | .name | select(tag != "!!str")), (.metadata.labels[]? | select(tag != "!!str")), (.. | select(has("targetNamespace")) | .targetNamespace | select(tag != "!!str")), (.data.VAULT_NAMESPACE? | select(. != null and tag != "!!str"))' "$WORK/num.yaml"
+[ -z "$nonstr" ] || { tnm_ok=1; tnm_detail="$tnm_detail [tenant 1234 left non-string values: $(tr '\n' ' ' <<<"$nonstr")]"; }
+yqs numpolicies 'select(.kind == "Policy") | .metadata.name' "$WORK/num.yaml"
+[ -n "$numpolicies" ] || { tnm_ok=1; tnm_detail="$tnm_detail [tenant 1234 rendered no Policy — the check proves nothing]"; }
+yqs pnonstr '(.. | select(has("value")) | .value | select(tag != "!!str")), (.. | select(has("matchLabels")) | .matchLabels[] | select(tag != "!!str")), (.metadata.name | select(tag != "!!str"))' "$WORK/emit-enabled.yaml"
+[ -z "$pnonstr" ] || { tnm_ok=1; tnm_detail="$tnm_detail [parent left non-string values for tenant 1234: $(tr '\n' ' ' <<<"$pnonstr")]"; }
+for bad in has.dot Upper under_score; do
+  if render core "$FIXTURES/values-no-optins.yaml" --set-string "tenant=$bad" > /dev/null 2>"$WORK/tnm.err"; then
+    tnm_ok=1; tnm_detail="$tnm_detail [tenant $bad rendered]"
+  else
+    grep -q 'is not a DNS label' "$WORK/tnm.err" || { tnm_ok=1; tnm_detail="$tnm_detail [tenant $bad failed elsewhere: $(first "$WORK/tnm.err")]"; }
+  fi
+done
+check tenantname "$tnm_ok" "$tnm_detail"
+
+# 28. datalifetime
+dl_ok=0; dl_detail=""
+for c in all core; do
+  yqs data "select(.kind == \"Namespace\" or .kind == \"SecretEngineMount\") | .kind + \"/\" + .metadata.name" "$WORK/$c.raw"
+  [ -z "$data" ] || { dl_ok=1; dl_detail="$dl_detail [tenant chart ($c) renders $data — it must come from the parent]"; }
+done
+yqs empt 'select((.kind == "Namespace" or .kind == "SecretEngineMount") and (.metadata.name == "empty-tenant" or .metadata.name == "empty-tenant-kv")) | .kind' "$WORK/emit-enabled.yaml"
+[ "$(sort <<<"$empt" | tr '\n' ' ')" = "Namespace SecretEngineMount " ] || { dl_ok=1; dl_detail="$dl_detail [a tenant with no labelled namespace has no Vault namespace and kv mount from the parent: '$empt']"; }
+yqs emptti 'select(.kind == "TemplateInstance" and (.metadata.name | test("empty-tenant"))) | .metadata.name' "$WORK/emit-enabled.yaml"
+[ -z "$emptti" ] || { dl_ok=1; dl_detail="$dl_detail [a tenant with no labelled namespace got a child TI: $emptti]"; }
+check datalifetime "$dl_ok" "$dl_detail"
+
+# 29. tenantvalues — parsed as YAML, and rendered through the tenant chart
+tv_ok=0; tv_detail=""
+cat > "$WORK/tv.yaml" <<'YAML'
+tenantValues:
+  vaultCABundle: |
+    -----BEGIN CERTIFICATE-----
+    TVFIXTURE
+    -----END CERTIFICATE-----
+  monitoring:
+    enabled: true
+  sso:
+    oidc:
+      clientId: tv-client
+parent:
+  sso:
+    enabled: true
+    issuerUrl: https://idp.example.com
+YAML
+"$HELM" template b "$BOOTSTRAP" -n "$NS" -f "$WORK/tv.yaml" > "$WORK/tv.out" 2>&1 \
+  || { tv_ok=1; tv_detail="$tv_detail [bootstrap render failed: $(first "$WORK/tv.out")]"; }
+yqs tvvals 'select(.kind == "Template" and .metadata.name == "mto-extension-vault-enterprise") | .spec.helm.valuesTemplate' "$WORK/tv.out"
+# The per-tenant placeholders are t-op-v2 expressions; substitute them the way
+# t-op-v2 would before rendering the tenant chart with the result.
+sed -e 's/{{ \.parameters\.tenant | quote }}/"team-a"/' -e 's/{{ \.parameters\.knownTenants | quote }}/"team-a"/' \
+    -e 's/{{ \.parameters\.serviceAccounts | toJson }}/[{"metadata":{"name":"app","namespace":"team-a-dev","annotations":{"vault.stakater.com\/kv":"true","vault.stakater.com\/tier":"editor"}}}]/' \
+    -e 's/{{ \.parameters\.deployments | toJson }}/[]/' <<<"$tvvals" > "$WORK/tv-values.yaml"
+if grep -q '{{' "$WORK/tv-values.yaml"; then tv_ok=1; tv_detail="$tv_detail [unsubstituted placeholder: $(grep -m1 '{{' "$WORK/tv-values.yaml")]"; fi
+"$HELM" template x "$CHART" -n "$NS" -f "$WORK/tv-values.yaml" --set component=all > "$WORK/tv-tenant.yaml" 2>"$WORK/tv.err" \
+  || { tv_ok=1; tv_detail="$tv_detail [tenant chart rejected the plumbed values: $(first "$WORK/tv.err")]"; }
+yqs ca 'select(.kind == "ConfigMap" and .metadata.name == "vault-ca-bundle") | .data."ca.crt"' "$WORK/tv-tenant.yaml"
+grep -q TVFIXTURE <<<"$ca" || { tv_ok=1; tv_detail="$tv_detail [vaultCABundle did not reach the vault-ca-bundle ConfigMap]"; }
+yqs storeca 'select(.kind == "SecretStore") | .spec.provider.vault.caBundle' "$WORK/tv-tenant.yaml"
+[ -n "$storeca" ] || { tv_ok=1; tv_detail="$tv_detail [SecretStore has no caBundle]"; }
+yqs pr 'select(.kind == "PrometheusRule") | .metadata.name' "$WORK/tv-tenant.yaml"
+[ -n "$pr" ] || { tv_ok=1; tv_detail="$tv_detail [monitoring.enabled did not reach the tenant]"; }
+yqs cid 'select(.kind == "JWTOIDCAuthEngineConfig") | .spec.OIDCClientID' "$WORK/tv-tenant.yaml"
+[ "$cid" = tv-client ] || { tv_ok=1; tv_detail="$tv_detail [sso.oidc.clientId: '$cid', want tv-client]"; }
+yqs iss 'select(.kind == "JWTOIDCAuthEngineConfig") | .spec.OIDCDiscoveryURL' "$WORK/tv-tenant.yaml"
+[ "$iss" = https://idp.example.com ] || { tv_ok=1; tv_detail="$tv_detail [parent.sso.issuerUrl lost in the merge: '$iss']"; }
+for owned in "tenantValues.vco.role=x:use vco instead" "tenantValues.sso.enabled=true:use parent.sso.enabled" "tenantValues.token.ttl=5:use parent.token"; do
+  if "$HELM" template b "$BOOTSTRAP" -n "$NS" --set "${owned%%:*}" > /dev/null 2>"$WORK/tv.err"; then
+    tv_ok=1; tv_detail="$tv_detail [${owned%%:*} accepted]"
+  else
+    grep -q -- "${owned#*:}" "$WORK/tv.err" || { tv_ok=1; tv_detail="$tv_detail [${owned%%:*} failed elsewhere: $(first "$WORK/tv.err")]"; }
+  fi
+done
+# From a values file, and asserted on the guard's own message: `--set` reads
+# {…} as list syntax, so a --set value fails in helm's argument parser before it
+# reaches the chart, and this check then passed with the guard deleted.
+printf 'tenantValues:\n  sso:\n    tenantGroupTemplate: "{{ .x }}"\n' > "$WORK/tv-braces.yaml"
+if "$HELM" template b "$BOOTSTRAP" -n "$NS" -f "$WORK/tv-braces.yaml" > /dev/null 2>"$WORK/tv.err"; then
+  tv_ok=1; tv_detail="$tv_detail [a value containing {{ was accepted]"
+else
+  grep -q 'renders the child valuesTemplate as a Go template' "$WORK/tv.err" \
+    || { tv_ok=1; tv_detail="$tv_detail [a value containing {{ failed elsewhere: $(first "$WORK/tv.err")]"; }
+fi
+check tenantvalues "$tv_ok" "$tv_detail"
+
+# 30. falsestring — schema kept on: it accepts "false", which is the point
+fs_ok=0; fs_detail=""
+fs_render() { # fs_render <value> -> manifest with sso and monitoring set to <value>
+  render all "$FIXTURES/values-full.yaml" --set-string "sso.enabled=$1" --set-string "monitoring.enabled=$1"
+}
+fs_render false > "$WORK/fs-false.yaml" 2>"$WORK/fs.err" || { fs_ok=1; fs_detail="$fs_detail [\"false\" did not render: $(first "$WORK/fs.err")]"; }
+yqs fson 'select(.kind == "JWTOIDCAuthEngineConfig" or .kind == "JWTOIDCAuthEngineRole" or .kind == "PrometheusRule" or (.kind == "AuthEngineMount" and .spec.type == "oidc")) | .kind' "$WORK/fs-false.yaml"
+[ -z "$fson" ] || { fs_ok=1; fs_detail="$fs_detail [the string \"false\" rendered: $(sort -u <<<"$fson" | tr '\n' ' ')]"; }
+fs_render true > "$WORK/fs-true.yaml" 2>"$WORK/fs.err" || { fs_ok=1; fs_detail="$fs_detail [\"true\" did not render: $(first "$WORK/fs.err")]"; }
+yqs fsyes 'select(.kind == "JWTOIDCAuthEngineConfig" or .kind == "PrometheusRule") | .kind' "$WORK/fs-true.yaml"
+[ "$(sort -u <<<"$fsyes" | tr '\n' ' ')" = "JWTOIDCAuthEngineConfig PrometheusRule " ] || { fs_ok=1; fs_detail="$fs_detail [the string \"true\" did not render SSO and monitoring: '$fsyes']"; }
+check falsestring "$fs_ok" "$fs_detail"
+
+# 31. ssoissuer
+si_ok=0; si_detail=""
+if "$HELM" template b "$BOOTSTRAP" -n "$NS" --set parent.sso.enabled=true > /dev/null 2>"$WORK/si.err"; then
+  si_ok=1; si_detail="$si_detail [SSO without an issuer URL installed]"
+else
+  grep -q 'requires parent.sso.issuerUrl' "$WORK/si.err" || { si_ok=1; si_detail="$si_detail [failed elsewhere: $(first "$WORK/si.err")]"; }
+fi
+"$HELM" template b "$BOOTSTRAP" -n "$NS" --set parent.sso.enabled=true --set parent.sso.issuerUrl=https://idp > /dev/null 2>"$WORK/si.err" \
+  || { si_ok=1; si_detail="$si_detail [SSO with an issuer URL was refused: $(first "$WORK/si.err")]"; }
+check ssoissuer "$si_ok" "$si_detail"
+
+# 32. alertlabels
+al_ok=0; al_detail=""
+yqs expr 'select(.kind == "PrometheusRule") | .spec.groups[].rules[].expr' "$WORK/all.raw"
+[ -n "$expr" ] || { al_ok=1; al_detail="$al_detail [values-full rendered no alert — the check proves nothing]"; }
+used="$(grep -oE '[a-z_]+ *=~? *"' <<<"$expr" | sed -E 's/ *=~? *"//' | sort -u | tr '\n' ' ')"
+[ "$used" = "condition namespace status " ] || { al_ok=1; al_detail="$al_detail [the alert selects labels '$used'; ESO exports only name, namespace, condition, status]"; }
+grep -q 'namespace=~"team-a-dev|team-a-tools"' <<<"$expr" || { al_ok=1; al_detail="$al_detail [the alert does not select the tenant's namespaces: $expr]"; }
+check alertlabels "$al_ok" "$al_detail"
+
+# 33. removedkeys
+rk_ok=0; rk_detail=""
+if render all "$FIXTURES/values-full.yaml" --set networkPolicy.enabled=true > /dev/null 2>"$WORK/rk.err"; then
+  rk_ok=1; rk_detail="$rk_detail [the tenant chart accepted networkPolicy]"
+else
+  grep -q 'networkPolicy was removed' "$WORK/rk.err" || { rk_ok=1; rk_detail="$rk_detail [tenant chart failed elsewhere: $(first "$WORK/rk.err")]"; }
+fi
+if "$HELM" template b "$BOOTSTRAP" -n "$NS" --set tenantValues.networkPolicy.enabled=true > /dev/null 2>"$WORK/rk.err"; then
+  rk_ok=1; rk_detail="$rk_detail [the bootstrap accepted tenantValues.networkPolicy]"
+else
+  grep -q 'NetworkPolicy feature was removed' "$WORK/rk.err" || { rk_ok=1; rk_detail="$rk_detail [bootstrap failed elsewhere: $(first "$WORK/rk.err")]"; }
+fi
+# perTenantClient: its presence fails, whatever its value, like networkPolicy.
+if render all "$FIXTURES/values-full.yaml" --set sso.oidc.perTenantClient=false > /dev/null 2>"$WORK/rk.err"; then
+  rk_ok=1; rk_detail="$rk_detail [the tenant chart accepted sso.oidc.perTenantClient]"
+else
+  grep -q 'sso.oidc.perTenantClient was removed' "$WORK/rk.err" || { rk_ok=1; rk_detail="$rk_detail [tenant chart failed elsewhere on perTenantClient: $(first "$WORK/rk.err")]"; }
+fi
+if "$HELM" template b "$BOOTSTRAP" -n "$NS" --set tenantValues.sso.oidc.perTenantClient=true > /dev/null 2>"$WORK/rk.err"; then
+  rk_ok=1; rk_detail="$rk_detail [the bootstrap accepted tenantValues.sso.oidc.perTenantClient]"
+else
+  grep -q 'per-tenant client option was removed' "$WORK/rk.err" || { rk_ok=1; rk_detail="$rk_detail [bootstrap failed elsewhere on perTenantClient: $(first "$WORK/rk.err")]"; }
+fi
+if render all "$FIXTURES/values-full.yaml" --set sso.audience=vault > /dev/null 2>"$WORK/rk.err"; then
+  rk_ok=1; rk_detail="$rk_detail [the tenant chart accepted sso.audience]"
+else
+  grep -q 'sso.audience was removed' "$WORK/rk.err" || { rk_ok=1; rk_detail="$rk_detail [tenant chart failed elsewhere on sso.audience: $(first "$WORK/rk.err")]"; }
+fi
+if "$HELM" template b "$BOOTSTRAP" -n "$NS" --set tenantValues.sso.audience=vault > /dev/null 2>"$WORK/rk.err"; then
+  rk_ok=1; rk_detail="$rk_detail [the bootstrap accepted tenantValues.sso.audience]"
+else
+  grep -q 'tenantValues.sso.audience was removed' "$WORK/rk.err" || { rk_ok=1; rk_detail="$rk_detail [bootstrap failed elsewhere on sso.audience: $(first "$WORK/rk.err")]"; }
+fi
+# The SSO config still renders the one shared client when the key is absent.
+yqs cid 'select(.kind == "JWTOIDCAuthEngineConfig") | .spec.OIDCClientID + " " + .spec.OIDCCredentials.secret.name' "$WORK/all.raw"
+[ "$cid" = "vault vault-oidc-client-secret" ] || { rk_ok=1; rk_detail="$rk_detail [the shared SSO client rendered '$cid', want 'vault vault-oidc-client-secret']"; }
+check removedkeys "$rk_ok" "$rk_detail"
+
+# 34. release
+rl_ok=0; rl_detail=""
+mkdir -p "$WORK/stub"
+cat > "$WORK/stub/helm" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$STUB_LOG"
+case "$1" in
+  show) case "$STUB_MODE" in
+          published) echo "name: x"; exit 0 ;;
+          notfound)  echo "Error: ghcr.io/x: not found" >&2; exit 1 ;;
+          *)         echo "Error: unauthorized: authentication required" >&2; exit 1 ;;
+        esac ;;
+  package) mkdir -p "$4"; touch "$4/$(awk '/^name:/{print $2; exit}' "$2/Chart.yaml")-$(awk '/^version:/{print $2; exit}' "$2/Chart.yaml").tgz" ;;
+  push) exit 0 ;;
+esac
+STUB
+chmod +x "$WORK/stub/helm"
+rl_case() { # rl_case <mode> <expect-exit 0|1> <expect-push yes|no>
+  local rc=0
+  : > "$WORK/stub.log"
+  (cd "$WORK" && STUB_MODE="$1" STUB_LOG="$WORK/stub.log" HELM="$WORK/stub/helm" \
+     bash -e "$REPO_ROOT/hack/release-chart.sh" "$CHART" ghcr.io/example/charts) > "$WORK/rl.out" 2>&1 || rc=$?
+  [ "$rc" -eq "$2" ] || rl_detail="$rl_detail [$1: exit $rc, want $2: $(first "$WORK/rl.out")]"
+  if grep -q '^push ' "$WORK/stub.log"; then pushed=yes; else pushed=no; fi
+  [ "$pushed" = "$3" ] || rl_detail="$rl_detail [$1: pushed=$pushed, want $3]"
+}
+rl_case published 0 no
+rl_case notfound 0 yes
+rl_case unauthorized 1 no
+[ -z "$rl_detail" ] || rl_ok=1
+check release "$rl_ok" "$rl_detail"
+
+# 35. bumpcheck
+bc_ok=0; bc_detail=""
+G="$WORK/bump-repo"
+mkdir -p "$G/charts/a" "$G/charts/b"
+printf 'name: a\nversion: 0.1.0\n' > "$G/charts/a/Chart.yaml"
+printf 'name: b\nversion: 0.1.0\n' > "$G/charts/b/Chart.yaml"
+git -C "$G" init -q -b main && git -C "$G" -c user.email=t@t -c user.name=t add . && git -C "$G" -c user.email=t@t -c user.name=t commit -qm base
+git -C "$G" switch -q -c pr
+bc_case() { # bc_case <label> <expect-exit 0|1>
+  local rc=0
+  (cd "$G" && git -c user.email=t@t -c user.name=t commit -qam "$1" --allow-empty && "$REPO_ROOT/hack/version-bump-check.sh" main charts/a charts/b charts/c) > "$WORK/bc.out" 2>&1 || rc=$?
+  [ "$rc" -eq "$2" ] || bc_detail="$bc_detail [$1: exit $rc, want $2: $(tail -1 "$WORK/bc.out")]"
+}
+bc_case unchanged 0
+printf 'x: 1\n' > "$G/charts/a/values.yaml"; git -C "$G" add charts/a/values.yaml
+bc_case changed-no-bump 1
+sed -i.bak 's/^version: 0.1.0/version: 0.1.1/' "$G/charts/a/Chart.yaml" && rm -f "$G/charts/a/Chart.yaml.bak"
+bc_case changed-with-bump 0
+mkdir -p "$G/charts/c" && printf 'name: c\nversion: 0.0.1\n' > "$G/charts/c/Chart.yaml" && git -C "$G" add charts/c
+bc_case new-chart 0
+[ -z "$bc_detail" ] || bc_ok=1
+check bumpcheck "$bc_ok" "$bc_detail"
+
+# 36. ssotiers — every bad tier fails with its own message; the default tiers render.
+st_ok=0; st_detail=""
+printf 'sso:\n  tiers: [fallback]\ntierCaps:\n  fallback: %s\n' "'[\"read\"]'" > "$WORK/sst-fallback.yaml"
+printf 'sso:\n  tiers: [Bad.Tier]\n' > "$WORK/sst-dns.yaml"
+for c in "fallback:is reserved" "dns:is not a DNS label"; do
+  name="${c%%:*}"; msg="${c#*:}"
+  if render core "$FIXTURES/values-full.yaml" -f "$WORK/sst-$name.yaml" > /dev/null 2>"$WORK/sst.err"; then
+    st_ok=1; st_detail="$st_detail [tier $name rendered]"
+  else
+    grep -q -- "$msg" "$WORK/sst.err" || { st_ok=1; st_detail="$st_detail [tier $name failed elsewhere: $(first "$WORK/sst.err")]"; }
+  fi
+done
+yqs ssoroles 'select(.kind == "JWTOIDCAuthEngineRole") | .metadata.name' "$WORK/all.raw"
+[ -n "$ssoroles" ] || { st_ok=1; st_detail="$st_detail [values-full rendered no SSO role — the refusals above prove nothing]"; }
+check ssotiers "$st_ok" "$st_detail"
+
+# 37. ssoaudience — every SSO role, the fallback role too, accepts exactly the
+# client ID as its audience: with the default client and with another one.
+sa_ok=0; sa_detail=""
+render all "$FIXTURES/values-full.yaml" --set sso.oidc.clientId=mto-vault > "$WORK/sa-custom.yaml" 2>"$WORK/sa.err" \
+  || { sa_ok=1; sa_detail="$sa_detail [render with sso.oidc.clientId=mto-vault failed: $(first "$WORK/sa.err")]"; }
+for c in "default:$WORK/all.raw:vault" "custom:$WORK/sa-custom.yaml:mto-vault"; do
+  name="${c%%:*}"; rest="${c#*:}"; file="${rest%:*}"; want="${rest##*:}"
+  yqs sacid 'select(.kind == "JWTOIDCAuthEngineConfig") | .spec.OIDCClientID' "$file"
+  [ "$sacid" = "$want" ] || { sa_ok=1; sa_detail="$sa_detail [$name: config client ID '$sacid', want $want]"; }
+  yqs saroles 'select(.kind == "JWTOIDCAuthEngineRole") | .metadata.name' "$file"
+  grep -qx 'sso\.team-a\.fallback' <<<"$saroles" || { sa_ok=1; sa_detail="$sa_detail [$name: no fallback role rendered — its audience is untested]"; }
+  yqs sabad "select(.kind == \"JWTOIDCAuthEngineRole\") | select((.spec.boundAudiences | length) != 1 or .spec.boundAudiences[0] != \"$want\") | .metadata.name + \" -> \" + (.spec.boundAudiences | join(\",\"))" "$file"
+  [ -z "$sabad" ] || { sa_ok=1; sa_detail="$sa_detail [$name: roles whose audience is not the client ID $want: $(tr '\n' ' ' <<<"$sabad")]"; }
+done
+check ssoaudience "$sa_ok" "$sa_detail"
 
 exit "$fail"

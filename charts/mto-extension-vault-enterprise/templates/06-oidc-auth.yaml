@@ -3,26 +3,23 @@
 Section 6 — per-tenant OIDC scaffolding for human SSO, gated by sso.enabled.
 
   - AuthEngineMount oidc/sso in the tenant's Vault namespace.
-  - JWTOIDCAuthEngineConfig pointing at the IdP. With
-    sso.oidc.perTenantClient=false (default) every tenant shares one IdP client
-    (sso.oidc.clientId + clientSecretRef); tenants are told apart by the groups
-    claim → role mapping in §7. With perTenantClient=true the chart expects a
-    Secret "<tenant>-<clientSecretRef.name>" and client id "<tenant>-<clientId>".
+  - JWTOIDCAuthEngineConfig pointing at the IdP. Every tenant shares one IdP
+    client (sso.oidc.clientId + clientSecretRef); tenants are told apart by
+    the groups claim → role mapping in §7.
 
 VCO reads the client secret from clientSecretRef in configNamespace.
+
+There is no per-tenant client. The option existed (client id
+"<tenant>-<clientId>") but never worked: the bootstrap could not set it, and
+the roles still bound the shared audience, so every login was refused. It also
+needed one IdP client per tenant, which nothing here creates.
 */}}
-{{- if .Values.sso.enabled }}
+{{- if include "vault.on" (dict "name" "sso.enabled" "value" .Values.sso.enabled) }}
 {{- if not .Values.sso.oidc.issuerUrl }}
 {{- fail "sso.enabled=true requires sso.oidc.issuerUrl to be set" }}
 {{- end }}
 {{- $name := required ".Values.tenant must be set by the parent" .Values.tenant }}
 {{- $labels := include "vault.labels" . }}
-{{- $clientId := .Values.sso.oidc.clientId }}
-{{- $secretName := .Values.sso.oidc.clientSecretRef.name }}
-{{- if .Values.sso.oidc.perTenantClient }}
-{{- $clientId = printf "%s-%s" $name $clientId }}
-{{- $secretName = printf "%s-%s" $name $secretName }}
-{{- end }}
 ---
 apiVersion: redhatcop.redhat.io/v1alpha1
 kind: AuthEngineMount
@@ -52,10 +49,10 @@ spec:
   OIDCDiscoveryCAPEM: |
 {{ .Values.sso.oidc.caBundlePem | indent 4 }}
   {{- end }}
-  OIDCClientID: {{ $clientId | quote }}
+  OIDCClientID: {{ .Values.sso.oidc.clientId | quote }}
   OIDCCredentials:
     secret:
-      name: {{ $secretName }}
+      name: {{ .Values.sso.oidc.clientSecretRef.name }}
     passwordKey: {{ .Values.sso.oidc.clientSecretRef.key }}
 {{- end }}
 {{- end }}

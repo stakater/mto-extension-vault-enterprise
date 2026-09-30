@@ -20,6 +20,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # The pinned helm and yq, not the runner image's: the Makefile downloads its
+    # pinned versions only when HELM / YQ_BIN point at a path that does not exist
+    # yet. The render harness is sensitive to the yq version.
+    env:
+      HELM: ${{ github.workspace }}/bin/helm
+      YQ_BIN: ${{ github.workspace }}/bin/yq
     steps:
       - uses: actions/checkout@v4
 
@@ -30,9 +36,9 @@ jobs:
       - name: Lint, render tests, version pin, CRD schema check
         run: make all
 
-      # check-tag-free in the Makefile refuses a version that is already
-      # published — helm push itself would overwrite it. The tenant chart is
-      # pushed before the bootstrap that pins it.
+      # hack/release-chart.sh skips a version that is already published (helm
+      # push would overwrite it) and fails on anything it cannot interpret. The
+      # tenant chart is pushed before the bootstrap that pins it.
       - name: Package and push charts
         run: make helm-release
         env:

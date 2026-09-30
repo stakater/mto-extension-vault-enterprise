@@ -127,3 +127,106 @@ Usage: {{ include "mto-extension-vault-enterprise-bootstrap.vcoOutputs" (dict "n
     - { name: {{ $k.output }}LastError, jsonPath: "{.status.conditions[?(@.type=='ReconcileFailed')].message}" }
 {{- end }}
 {{- end -}}
+
+{{/*
+The install-wide part of every child TemplateInstance's values, as YAML: the
+tenant chart values that are the same for every tenant. Only tenant,
+knownTenants, serviceAccounts and deployments differ per tenant; the child
+valuesTemplate adds those as t-op-v2 placeholders.
+
+.Values.tenantValues is merged in as given, so any tenant chart value can be set
+install-wide (vaultCABundle, networkPolicy, monitoring, sso.oidc.*, sso.tiers,
+tierCaps, …). A key this chart already owns fails the render instead of being
+silently overridden, naming the bootstrap value to set instead.
+
+t-op-v2 renders the valuesTemplate as a Go template, so a value containing "{{"
+would be executed there; that fails here too.
+*/}}
+{{- define "mto-extension-vault-enterprise-bootstrap.installWideValues" -}}
+{{- $tv := deepCopy (.Values.tenantValues | default dict) -}}
+{{- $owned := dict
+      "component" "set per slice by this chart"
+      "tenant" "set per tenant by the parent"
+      "knownTenants" "set per tenant by the parent"
+      "serviceAccounts" "set per tenant by the parent"
+      "deployments" "set per tenant by the parent"
+      "env" "parent.env"
+      "vaultServer" "parent.vaultServer"
+      "eso" "parent.eso"
+      "externalSecretRefreshInterval" "parent.externalSecretRefreshInterval"
+      "configNamespace" "configNamespace"
+      "vco" "vco"
+      "kubernetesAuth" "kubernetesAuth"
+      "tenantLabelKey" "parent.tenantLabelKey"
+      "sharedTenant" "parent.sharedTenantName"
+      "token" "parent.token" -}}
+{{- range $k, $use := $owned -}}
+{{- if hasKey $tv $k -}}
+{{- fail (printf "tenantValues.%s is set by this chart — use %s instead" $k $use) -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey $tv "networkPolicy" -}}
+{{- fail "tenantValues.networkPolicy: the tenant chart's NetworkPolicy feature was removed — tenant egress policy belongs to MTO. Delete it" -}}
+{{- end -}}
+{{- $parentSso := include "mto-extension-vault-enterprise-bootstrap.parentSso" . | fromYaml -}}
+{{- /* Checked here, once, rather than left to the tenant chart: there it fails
+       every tenant's core render while this install reports success. */ -}}
+{{- if and (eq (include "mto-extension-vault-enterprise-bootstrap.ssoEnabled" .) "true") (not $parentSso.issuerUrl) -}}
+{{- fail "parent.sso.enabled=true requires parent.sso.issuerUrl — without it every tenant's render fails" -}}
+{{- end -}}
+{{- $sso := $tv.sso | default dict -}}
+{{- range $k, $use := dict "enabled" "parent.sso.enabled" "allowedRedirectUris" "parent.sso.allowedRedirectUris" -}}
+{{- if hasKey $sso $k -}}
+{{- fail (printf "tenantValues.sso.%s is set by this chart — use %s instead" $k $use) -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey $sso "audience" -}}
+{{- fail "tenantValues.sso.audience was removed — every SSO role accepts tenantValues.sso.oidc.clientId as the audience, because an ID token's aud is the client ID. Delete it (set sso.oidc.clientId to your IdP client instead)" -}}
+{{- end -}}
+{{- $oidc := $sso.oidc | default dict -}}
+{{- if hasKey $oidc "perTenantClient" -}}
+{{- fail "tenantValues.sso.oidc.perTenantClient: the per-tenant client option was removed — every tenant uses the one shared IdP client sso.oidc.clientId. Delete it" -}}
+{{- end -}}
+{{- if hasKey $oidc "issuerUrl" -}}
+{{- fail "tenantValues.sso.oidc.issuerUrl is set by this chart — use parent.sso.issuerUrl instead" -}}
+{{- end -}}
+{{- $_ := set $oidc "issuerUrl" ($parentSso.issuerUrl | default "") -}}
+{{- $_ := set $sso "oidc" $oidc -}}
+{{- $_ := set $sso "enabled" (eq (include "mto-extension-vault-enterprise-bootstrap.ssoEnabled" .) "true") -}}
+{{- with $parentSso.allowedRedirectUris }}{{ $_ := set $sso "allowedRedirectUris" . }}{{ end -}}
+{{- $_ := set $tv "sso" $sso -}}
+{{- $_ := set $tv "env" .Values.parent.env -}}
+{{- $_ := set $tv "vaultServer" .Values.parent.vaultServer -}}
+{{- $_ := set $tv "eso" (include "mto-extension-vault-enterprise-bootstrap.esoMode" .) -}}
+{{- $_ := set $tv "externalSecretRefreshInterval" .Values.parent.externalSecretRefreshInterval -}}
+{{- $_ := set $tv "configNamespace" .Values.configNamespace -}}
+{{- $_ := set $tv "vco" .Values.vco -}}
+{{- $_ := set $tv "kubernetesAuth" .Values.kubernetesAuth -}}
+{{- $_ := set $tv "tenantLabelKey" .Values.parent.tenantLabelKey -}}
+{{- $_ := set $tv "sharedTenant" (dict "name" .Values.parent.sharedTenantName) -}}
+{{- /* Built key-by-key and set only when one is given: an empty token map would
+       wipe the tenant chart's own defaults. period is not plumbed on purpose. */ -}}
+{{- $ptok := dict -}}
+{{- $src := ((.Values.parent | default dict).token | default dict) -}}
+{{- range $k := (list "type" "ttl" "maxTTL") -}}
+{{- $v := get $src $k -}}
+{{- if $v }}{{- $_ := set $ptok $k $v }}{{- end -}}
+{{- end -}}
+{{- with $ptok }}{{ $_ := set $tv "token" . }}{{ end -}}
+{{- $out := toYaml $tv -}}
+{{- if contains "{{" $out -}}
+{{- fail "a tenant value contains \"{{\": t-op-v2 renders the child valuesTemplate as a Go template and would execute it. Remove it from tenantValues (or the value it came from)" -}}
+{{- end -}}
+{{- $out -}}
+{{- end -}}
+
+{{/*
+"true" when an optional tenant-chart feature is switched on install-wide in
+tenantValues. Used to gate the RBAC `create` that feature needs.
+Usage: {{ include "mto-extension-vault-enterprise-bootstrap.tenantFeature" (dict "ctx" . "feature" "networkPolicy") }}
+*/}}
+{{- define "mto-extension-vault-enterprise-bootstrap.tenantFeature" -}}
+{{- $f := get (.ctx.Values.tenantValues | default dict) .feature | default dict -}}
+{{- $v := ternary (get $f "enabled") nil (hasKey $f "enabled") -}}
+{{- include "mto-extension-vault-enterprise-bootstrap.boolValue" (dict "name" (printf "tenantValues.%s.enabled" .feature) "value" $v) -}}
+{{- end -}}

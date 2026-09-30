@@ -85,6 +85,23 @@
         }
       }
     },
+    "tenantValues": {
+      "description": "Install-wide tenant chart values. Validated by the tenant chart's own schema at render time; keys owned by this chart are rejected by the installWideValues helper.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "monitoring": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "$ref": "#/definitions/boolish"
+            }
+          }
+        }
+      }
+    },
     "sync": {
       "type": "object",
       "properties": {

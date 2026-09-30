@@ -11,7 +11,9 @@
 # Which slice of the chart this render emits. The bootstrap's child Templates
 # set this per TemplateInstance, so ESO lives in its own TI and a missing ESO
 # CRD cannot fail the core Vault wiring.
-#   all   — everything (standalone default)
+#   all   — core + eso (standalone default). Not a complete tenant on its own:
+#           the tenant's Vault namespace and kv mount come from the bootstrap
+#           parent, so they outlive the tenant's labelled namespaces.
 #   core  — VCO CRs + core Kubernetes resources
 #   eso   — SecretStore / ExternalSecret only
 component: all
@@ -130,22 +132,20 @@ sso:
     name: sso
   oidc:
     issuerUrl: ""
+    # The IdP client Vault logs people in through. Also the audience every SSO
+    # role accepts: an ID token's `aud` is the client ID it was issued to.
     clientId: vault
     # A Secret in configNamespace holding the client secret under `key`.
     clientSecretRef:
       name: vault-oidc-client-secret
       key: client-secret
     caBundlePem: ""
-    # true: each tenant uses client id "<tenant>-<clientId>" and Secret
-    # "<tenant>-<clientSecretRef.name>". IdP-side provisioning is outside this
-    # chart.
-    perTenantClient: false
 
   # IdP-group pattern. Placeholders {tenant} and {tier}.
   tenantGroupTemplate: "{tenant}-{tier}s"
 
   # Per-tier override of the group pattern: tenantRoleMapping.<tier>.pattern.
-  # fallback: a tier name emits sso-<tenant>-fallback with NO group binding —
+  # fallback: a tier name emits sso.<tenant>.fallback with NO group binding —
   # any valid OIDC token gets that tier. deny (default) emits nothing.
   tenantRoleMapping:
     admin:       {}
@@ -154,7 +154,6 @@ sso:
     audit-read:  {}
     fallback: deny
 
-  audience: vault
   allowedRedirectUris:
     - "http://localhost:8250/oidc/callback"
 
@@ -165,19 +164,9 @@ sso:
     - viewer
     - audit-read
 
-# ─── NetworkPolicy (workload namespaces) ────────────────────────────
-# Default-deny + Vault egress per workload namespace. Needs a CNI that
-# enforces NetworkPolicies (kindnet does not).
-networkPolicy:
-  enabled: false
-  vaultSelector:
-    namespaceSelector:
-      matchLabels:
-        kubernetes.io/metadata.name: vault
-
 # ─── Monitoring (PrometheusRule) ─────────────────────────────────────
-# Needs prometheus-operator CRDs and kube-state-metrics custom-resource state
-# metrics for the VCO kinds.
+# One alert per tenant on its ExternalSecrets failing to sync. Needs the
+# prometheus-operator CRDs, and ESO's metrics scraped (ESO's own ServiceMonitor).
 monitoring:
   enabled: false
   prometheusNamespace: monitoring

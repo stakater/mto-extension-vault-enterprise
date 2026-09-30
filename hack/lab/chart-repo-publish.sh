@@ -57,7 +57,9 @@ done
 # would make every child TemplateInstance render an older chart and every
 # assertion in the suite would then be about the wrong code.
 served=$(kc -n "${REPO_NS}" exec "${pod}" -- wget -qO- http://127.0.0.1:8080/index.yaml)
-if ! printf '%s\n' "${served}" | grep -q "version: ${version}$"; then
+# A here-string, not printf | grep -q: under pipefail grep's early exit can
+# fail printf on a large index and read a served version as missing.
+if ! grep -q "version: ${version}$" <<<"${served}"; then
   echo "chart-repo's index.yaml does not list ${name} ${version}:" >&2
   printf '%s\n' "${served}" | head -20 >&2
   exit 1

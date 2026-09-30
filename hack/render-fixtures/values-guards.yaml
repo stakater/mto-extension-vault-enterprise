@@ -32,6 +32,9 @@ serviceAccounts:
   # declared nothing and is defended by its own name
   - metadata: { name: g-claimed, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor } }
   - metadata: { name: g-claimer, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: admin, vault.stakater.com/app: g-claimed } }
+  # share annotations on a ServiceAccount whose annotations are rejected: the
+  # share templates must not render for it (their `not $f.errors` gate)
+  - metadata: { name: g-share-err, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editorr, vault.stakater.com/kv-export-tenant: team-b, vault.stakater.com/kv-import-tenant: team-b } }
   # sharing annotation with kv off
   - metadata: { name: g-orphan-share, namespace: team-a-dev, annotations: { vault.stakater.com/kv-export-tenant: team-b } }
   # the default ServiceAccount

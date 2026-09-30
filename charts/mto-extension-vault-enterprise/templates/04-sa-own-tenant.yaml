@@ -1,6 +1,6 @@
 {{/*
 Section 4 (own-tenant) — per annotated ServiceAccount:
-  - Policy <tenant>-<saNs>-<sa>                    KV grants in the tenant's Vault namespace
+  - Policy kv.<tenant>.<saNs>.<sa>                 KV grants in the tenant's Vault namespace
   - KubernetesAuthEngineRole same name             bound to the SA in its Kubernetes namespace
   - ConfigMap vault-config-<sa>                    VAULT_* env for SDK consumers
   - SecretStore <sa>-vault                         for ESO consumers (eso=enabled)
@@ -180,7 +180,7 @@ data:
   {{- if $.Values.vaultCABundle }}
   VAULT_CACERT: /etc/vault/ca/ca.crt
   {{- end }}
-  VAULT_NAMESPACE: {{ $tenantNs }}
+  VAULT_NAMESPACE: {{ $tenantNs | quote }}
   VAULT_K8S_MOUNT: {{ $k8sMount }}
   VAULT_K8S_ROLE: {{ $roleName }}
   VAULT_KV_APP: {{ $app | quote }}
@@ -201,7 +201,7 @@ data:
   {{- $peer = trim $peer }}
   {{- if include "vault.peerEmittable" (dict "peer" $peer "knownCsv" $.Values.knownTenants) }}
   {{- $peerKey := upper (replace "-" "_" $peer) }}
-  VAULT_OUT_{{ $peerKey }}_NAMESPACE: {{ $sharedNs }}
+  VAULT_OUT_{{ $peerKey }}_NAMESPACE: {{ $sharedNs | quote }}
   VAULT_OUT_{{ $peerKey }}_ROLE: {{ include "vault.shareOutName" (dict "tenant" $tenant "saNs" $saNs "saName" $saName "peer" $peer) }}
   VAULT_OUT_{{ $peerKey }}_PATH: kv/data/{{ $env }}/from-{{ $tenant }}/to-{{ $peer }}/
   {{- end }}
@@ -212,7 +212,7 @@ data:
   {{- $peer = trim $peer }}
   {{- if include "vault.peerEmittable" (dict "peer" $peer "knownCsv" $.Values.knownTenants) }}
   {{- $peerKey := upper (replace "-" "_" $peer) }}
-  VAULT_IN_{{ $peerKey }}_NAMESPACE: {{ $sharedNs }}
+  VAULT_IN_{{ $peerKey }}_NAMESPACE: {{ $sharedNs | quote }}
   VAULT_IN_{{ $peerKey }}_ROLE: {{ include "vault.shareInName" (dict "tenant" $tenant "saNs" $saNs "saName" $saName "peer" $peer) }}
   VAULT_IN_{{ $peerKey }}_PATH: kv/data/{{ $env }}/from-{{ $peer }}/to-{{ $tenant }}/
   {{- end }}
@@ -255,7 +255,7 @@ spec:
       {{- end }}
       path: kv
       version: v2
-      namespace: {{ $tenantNs }}
+      namespace: {{ $tenantNs | quote }}
       auth:
         kubernetes:
           mountPath: {{ $k8sMount }}

@@ -15,9 +15,12 @@ vaultCABundle: |
   MIIBFIXTUREONLYNOTAREALCERTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
   -----END CERTIFICATE-----
 
-# Renders spec.authentication.namespace and nested tenant paths.
+# Renders spec.authentication.namespace and nested tenant paths. role and
+# serviceAccount differ, so a swap of the two fields is visible.
 vco:
   namespace: org
+  role: vco-role
+  serviceAccount: vco-sa
 
 kubernetesAuth:
   # Renders spec.tokenReviewerServiceAccount.
@@ -46,8 +49,6 @@ token:
   maxTTL: 14400
   period: 1800
 
-networkPolicy:
-  enabled: true
 
 monitoring:
   enabled: true

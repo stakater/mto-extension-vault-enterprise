@@ -74,6 +74,24 @@ parent:
     # browser logins.
     allowedRedirectUris: []
 
+# Install-wide values for the tenant chart, merged as given into every tenant's
+# render. t-op-v2 pulls the PUBLISHED tenant chart, so this is the only way to
+# set a tenant chart value — editing the tenant chart's own values.yaml has no
+# effect on a cluster. Keys this chart already sets (tenant, env, vaultServer,
+# eso, vco, kubernetesAuth, token, sso.enabled, sso.oidc.issuerUrl,
+# sso.allowedRedirectUris, …) fail the render, naming the value to use instead.
+tenantValues: {}
+#  vaultCABundle: |               # Vault's CA, when it is signed by a private CA
+#    -----BEGIN CERTIFICATE-----
+#    ...
+#  monitoring:
+#    enabled: true
+#  sso:
+#    oidc:
+#      clientId: vault
+#      clientSecretRef: { name: vault-oidc-client-secret, key: client-secret }
+#    tiers: [admin, editor, viewer]
+
 # Drift protection for everything the Templates render (t-op-v2 Template
 # spec.sync), applied to the parent and child Templates.
 #   off    — apply once per re-render; out-of-band edits persist.

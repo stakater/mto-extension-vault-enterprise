@@ -1,11 +1,17 @@
 package e2e
 
 import (
+	"context"
 	"encoding/json"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
+
+// cmdTimeout bounds every CLI call the suite makes: a hung exec must fail the
+// step, not stall the whole run until the CI job times out.
+const cmdTimeout = 2 * time.Minute
 
 // The suite reaches Vault through the `vault` CLI that ships in the Vault pod,
 // over `kubectl exec`: no port-forward, no extra image, and the same path an
@@ -34,7 +40,9 @@ func vaultRun(t *testing.T, token, ns string, args ...string) (string, error) {
 	full := append([]string{"--context", kubeContext, "-n", vaultNS, "exec", "-i", vaultPod, "--"}, env...)
 	full = append(full, "vault")
 	full = append(full, args...)
-	cmd := exec.Command(kubectlBin(), full...)
+	cctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, kubectlBin(), full...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -51,19 +59,49 @@ type vaultError struct {
 	err    error
 }
 
+// Error never includes a secret argument: a failed login carries the
+// ServiceAccount JWT as jwt=…, and this string ends up in the CI log.
 func (e *vaultError) Error() string {
-	return "vault " + strings.Join(e.args, " ") + " (namespace " + e.ns + "): " + e.err.Error() + "\n" + strings.TrimSpace(e.stderr)
+	shown := make([]string, len(e.args))
+	for i, a := range e.args {
+		if k, _, ok := strings.Cut(a, "="); ok && (k == "jwt" || k == "token" || k == "password" || k == "code") {
+			a = k + "=<redacted>"
+		}
+		shown[i] = a
+	}
+	return "vault " + strings.Join(shown, " ") + " (namespace " + e.ns + "): " + e.err.Error() + "\n" + strings.TrimSpace(e.stderr)
 }
 
 // refused reports whether err is Vault saying no to an AUTHENTICATED caller —
-// the only acceptable failure for an "is denied" assertion. A typo in a path, a
-// missing mount or a network error must not pass as a denial.
+// the only acceptable failure for an "is denied" assertion. It rejects a
+// network error or an exec failure, but NOT a wrong path or a missing mount:
+// for a non-root token Vault answers those with a 403 too. So every refusal
+// needs a matching allow — the same call on the same path succeeding for a
+// caller that is granted it — or data seeded at that path by root.
 func refused(err error) bool {
 	if err == nil {
 		return false
 	}
 	s := err.Error()
 	return strings.Contains(s, "Code: 403") || strings.Contains(s, "permission denied")
+}
+
+// vaultGone is for waits on a deletion. It reads as root and returns "" only
+// when Vault reports the object absent ("No value found" from `vault read`,
+// "No policy named" from `vault policy read`); otherwise "still present", or
+// the unexpected error, so a network error or a wrong path never reads as
+// "deleted".
+func vaultGone(t *testing.T, ns string, args ...string) string {
+	t.Helper()
+	_, err := vaultRun(t, vaultRootToken, ns, args...)
+	switch {
+	case err == nil:
+		return "still present"
+	case strings.Contains(err.Error(), "No value found"), strings.Contains(err.Error(), "No policy named"):
+		return ""
+	default:
+		return err.Error()
+	}
 }
 
 // vaultIn runs as root in the given namespace and fails the test on any error.
@@ -140,7 +178,14 @@ func vaultLogin(t *testing.T, ns, role, jwt string) (token string, policies []st
 // vaultTryLogin is vaultLogin for the cases that must fail.
 func vaultTryLogin(t *testing.T, ns, role, jwt string) (string, []string, error) {
 	t.Helper()
-	out, err := vaultRun(t, "", ns, "write", "-format=json", "auth/"+k8sAuthMount+"/login", "role="+role, "jwt="+jwt)
+	return vaultTryLoginAt(t, ns, k8sAuthMount, role, jwt)
+}
+
+// vaultTryLoginAt logs in at an explicit auth mount — used to prove that the
+// values a workload's vault-config ConfigMap gives it actually work.
+func vaultTryLoginAt(t *testing.T, ns, mount, role, jwt string) (string, []string, error) {
+	t.Helper()
+	out, err := vaultRun(t, "", ns, "write", "-format=json", "auth/"+mount+"/login", "role="+role, "jwt="+jwt)
 	if err != nil {
 		return "", nil, err
 	}
@@ -168,12 +213,14 @@ func kvPut(t *testing.T, token, ns, path string, kv ...string) error {
 	return err
 }
 
-// kvMetadataDelete deletes a secret's metadata — every version — as the given
-// token. KV v2 metadata is not a read-only view: this is the destructive call a
-// read-only subscriber must not be able to make.
-func kvMetadataDelete(t *testing.T, token, ns, path string) error {
+// kvMetadataPut updates a secret's metadata (flags such as -max-versions=1) as
+// the given token. KV v2 metadata is not a read-only view: max_versions and
+// delete_version_after destroy versions, so this is a call a read-only
+// subscriber must not be able to make.
+func kvMetadataPut(t *testing.T, token, ns, path string, flags ...string) error {
 	t.Helper()
-	_, err := vaultRun(t, token, ns, "kv", "metadata", "delete", "-mount=kv", path)
+	args := append(append([]string{"kv", "metadata", "put", "-mount=kv"}, flags...), path)
+	_, err := vaultRun(t, token, ns, args...)
 	return err
 }
 

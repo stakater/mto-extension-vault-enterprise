@@ -85,7 +85,7 @@ existing_expr=$(printf '%s' "${webhooks_json}" | jq -r '.webhooks[0].matchCondit
 if [ -n "${existing}" ]; then
 	if [ "${existing_expr}" = "${EXPRESSION}" ]; then
 		echo "sync-enforcement webhook already scoped by matchConditions/${existing}"
-	elif printf '%s' "${existing_expr}" | grep -qF "templates.v2.stakater.com/instance"; then
+	elif [[ "${existing_expr}" == *"templates.v2.stakater.com/instance"* ]]; then
 		# Scoped, and the filter still keys on the operator's instance label,
 		# so the TOV2-9 deadlock cannot happen -- but a filter that differs
 		# from the one this script carries means the operator's own changed

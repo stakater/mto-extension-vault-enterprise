@@ -1,47 +1,18 @@
 {{- if include "vault.componentEnabled" (dict "component" "core" "ctx" .) }}
 {{/*
 Section 1 — per-Tenant scaffolding, one copy per child TI:
-  Namespace                   <tenant>                    the tenant's Vault namespace, created from vco.namespace
-  SecretEngineMount           <tenant>-kv                 kv (v2) inside it
-  AuthEngineMount             <tenant>-kubernetes         kubernetes/workloads inside it
+  AuthEngineMount             <tenant>-kubernetes         kubernetes/workloads in the tenant's Vault namespace
   KubernetesAuthEngineConfig  <tenant>-kubernetes-config  its config
 
-VCO logs in once, in vco.namespace, and reaches the tenant namespace only
-through spec.authentication.targetNamespace. The Namespace itself has no
-target: it is created in the login namespace. The `shared` scaffolding lives
-in the parent gotemplate, not here.
-
-Deletion: VCO has no deletion policy. Deleting the Namespace CR deletes the
-Vault namespace and every secret in it, and Vault cannot restore it. The
-operator's Vault policy is what stops that — see charts/README.md → "Deletion".
+The tenant's Vault namespace and its kv mount are NOT here: the parent renders
+them for every Tenant CR, so they live as long as the Tenant and not as long as
+its labelled namespaces. The parent emits this chart's TemplateInstances only
+while the tenant has a labelled namespace; had the namespace and the kv mount
+been here, deleting a tenant's last namespace would have deleted its Vault
+namespace and every secret in it.
 */}}
 {{- $name := required ".Values.tenant must be set by the parent" .Values.tenant }}
 {{- $labels := include "vault.labels" . }}
----
-apiVersion: redhatcop.redhat.io/v1alpha1
-kind: Namespace
-metadata:
-  name: {{ $name }}
-  namespace: {{ .Values.configNamespace }}
-  labels:
-    {{- $labels | nindent 4 }}
-spec:
-  {{- include "vault.vcoAuth" (dict "ctx" $) | nindent 2 }}
-  name: {{ $name }}
----
-apiVersion: redhatcop.redhat.io/v1alpha1
-kind: SecretEngineMount
-metadata:
-  name: {{ $name }}-kv
-  namespace: {{ .Values.configNamespace }}
-  labels:
-    {{- $labels | nindent 4 }}
-spec:
-  {{- include "vault.vcoAuth" (dict "ctx" $ "target" $name) | nindent 2 }}
-  name: kv
-  type: kv
-  options:
-    version: "2"
 ---
 apiVersion: redhatcop.redhat.io/v1alpha1
 kind: AuthEngineMount

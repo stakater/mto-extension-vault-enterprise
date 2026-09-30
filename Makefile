@@ -54,13 +54,17 @@ VAULT_VERSION       ?= 2.1.1
 VAULT_EDITION       ?= ent
 VAULT_LICENSE_FILE  ?=
 
-# VCO is built from this checkout, so an unmerged fix can be tested.
-VCO_SRC      ?= ../vault-config-operator
-VCO_NS       ?= vault-config-operator
-VCO_RELEASE  ?= vault-config-operator
-VCO_IMG_REPO ?= vault-config-operator
-VCO_IMG_TAG  ?= lab
-VCO_CHART    := $(VCO_SRC)/charts/vault-config-operator
+# VCO release the lab and CI install. v1.0.3 is the first release with
+# spec.authentication.targetNamespace and the Namespace fix (upstream #373).
+VCO_VERSION   ?= v1.0.3
+VCO_HELM_REPO ?= https://redhat-cop.github.io/vault-config-operator
+VCO_NS        ?= vault-config-operator
+VCO_RELEASE   ?= vault-config-operator
+# lab-vco-src only: build VCO from a checkout, to test an unreleased change.
+VCO_SRC       ?= ../vault-config-operator
+VCO_IMG_REPO  ?= vault-config-operator
+VCO_IMG_TAG   ?= lab
+VCO_CHART     := $(VCO_SRC)/charts/vault-config-operator
 # Drift detection is off by default in VCO. The lab turns it on with a short
 # period, so out-of-band edits are visible quickly — and so the e2e suite can
 # watch objects across several drift reconciles in well under a minute.
@@ -71,6 +75,19 @@ VCO_SYNC_PERIOD_SECONDS ?= 30
 CONFIG_NS ?= vault-config
 CONFIG_SA ?= vco-admin
 VERIFY_LOGIN ?= 1
+
+# SSO, as in production: person -> Vault -> Dex (configured by DCO) -> Keycloak.
+# The namespaces and URLs are fixed: hack/lab/keycloak*.yaml and
+# hack/lab/dex-config.yaml name them too.
+KEYCLOAK_NS  := keycloak
+DEX_NS       := dex
+KEYCLOAK_URL := http://keycloak.$(KEYCLOAK_NS).svc.cluster.local:8080
+DEX_ISSUER   := http://dex.$(DEX_NS).svc.cluster.local:5556
+# The lab Keycloak's test users: hack/lab/keycloak-setup-job.yaml puts each in a group.
+KEYCLOAK_TEST_USERS := alice bob carol dave erin
+DEX_CHART_VERSION ?= 0.25.2
+DCO_CHART         ?= oci://ghcr.io/stakater/public/charts/dex-config-operator
+DCO_CHART_VERSION ?= 0.0.7
 
 .PHONY: help
 help: ## Show the targets.
@@ -113,11 +130,21 @@ crd-validate: helm yq ## Validate every rendered VCO CR against VCO's CRDs (apis
 	@test -d $(VCO_CRD_DIR) || { echo "error: VCO_CRD_DIR=$(VCO_CRD_DIR) does not exist" >&2; exit 1; }
 	HELM=$(HELM) YQ=$(YQ_BIN) ./hack/crd-validate.sh $(VCO_CRD_DIR)
 
-.PHONY: vco-crds-sync
-vco-crds-sync: ## Refresh hack/vco-crds from the VCO checkout at VCO_SRC. Update hack/vco-crds/README.md with it.
+.PHONY: vco-crds-sync vco-crds-sync-src
+vco-crds-sync: helm ## Refresh hack/vco-crds from the VCO_VERSION release chart. Update hack/vco-crds/README.md with it.
+	$(HELM) repo add vault-config-operator $(VCO_HELM_REPO) --force-update >/dev/null
+	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT \
+		&& $(HELM) pull vault-config-operator/vault-config-operator --version $(VCO_VERSION) --untar -d "$$tmp" \
+		&& for k in $(VCO_CRD_KINDS); do \
+			cp "$$tmp/vault-config-operator/crds/apiextensions.k8s.io_v1_customresourcedefinition_$$k.redhatcop.redhat.io.yaml" \
+				hack/vco-crds/redhatcop.redhat.io_$$k.yaml || exit 1; \
+		done
+	@echo "copied $(words $(VCO_CRD_KINDS)) CRDs from the vault-config-operator $(VCO_VERSION) release chart"
+
+vco-crds-sync-src: ## Refresh hack/vco-crds from the VCO checkout at VCO_SRC instead: for an unreleased VCO change.
 	@test -d $(VCO_SRC)/config/crd/bases || { echo "error: VCO_SRC=$(VCO_SRC) is not a vault-config-operator checkout" >&2; exit 1; }
 	@for k in $(VCO_CRD_KINDS); do cp $(VCO_SRC)/config/crd/bases/redhatcop.redhat.io_$$k.yaml hack/vco-crds/; done
-	@echo "copied $(words $(VCO_CRD_KINDS)) CRDs from $(VCO_SRC) @ $$(git -C $(VCO_SRC) rev-parse --short HEAD)$$(git -C $(VCO_SRC) diff --quiet || echo ' + uncommitted changes')"
+	@echo "copied $(words $(VCO_CRD_KINDS)) CRDs from $(VCO_SRC) @ $$(git -C $(VCO_SRC) rev-parse --short HEAD)$$(git -C $(VCO_SRC) diff --quiet HEAD || echo ' + uncommitted changes')"
 
 # ─── Release ─────────────────────────────────────────────────────────
 
@@ -140,45 +167,22 @@ helm-login: helm ## Log in to the OCI chart registry.
 	fi
 	@echo "$(GIT_TOKEN)" | $(HELM) registry login $(firstword $(subst /, ,$(HELM_REGISTRY))) -u "$(GIT_USER)" --password-stdin
 
-# helm push has no existence check and no --force, and GHCR permits tag
-# overwrite, so a republished version silently replaces what tenants pull.
-#
-# Fails closed: only an explicit not-found means the tag is free. helm show chart
-# also exits non-zero on DNS failure and an expired token, and treating those as
-# free would publish over tenants on a network blip. Must run after helm-login —
-# unauthenticated, GHCR answers 403 for absent and published tags alike.
-define check-tag-free
-@out=$$($(HELM) show chart oci://$(HELM_REGISTRY)/$(1) --version $(2) 2>&1); rc=$$?; \
-if [ $$rc -eq 0 ]; then \
-	echo "$(1) $(2) is already published — bump Chart.yaml before releasing"; exit 1; \
-fi; \
-if ! grep -qiE 'not found|manifest unknown|name unknown' <<<"$$out"; then \
-	echo "cannot determine whether $(1) $(2) is published — refusing to push:"; \
-	printf '%s\n' "$$out" | head -3; exit 1; \
-fi
-endef
-
 .PHONY: helm-release
 # Tenant chart FIRST: the bootstrap pins it by exact version, so publishing the
 # bootstrap first leaves a window where its child Templates name a chart tag that
-# 404s and every tenant renders nothing.
-helm-release: helm-release-tenant helm-release-bootstrap ## Release both charts to OCI.
-
-.PHONY: helm-release-tenant
-helm-release-tenant: helm helm-login ## Lint, package and push the tenant chart.
+# 404s and every tenant renders nothing. A version that is already published is
+# skipped (hack/release-chart.sh says why).
+helm-release: helm helm-login ## Release both charts to OCI; skips versions already published.
 	$(HELM) lint $(TENANT_CHART_DIR) --strict --set tenant=lint
-	$(call check-tag-free,mto-extension-vault-enterprise,$(TENANT_VERSION))
-	@mkdir -p dist
-	$(HELM) package $(TENANT_CHART_DIR) -d dist
-	$(HELM) push dist/mto-extension-vault-enterprise-$(TENANT_VERSION).tgz oci://$(HELM_REGISTRY)
-
-.PHONY: helm-release-bootstrap
-helm-release-bootstrap: helm helm-login ## Lint, package and push the bootstrap chart.
 	$(HELM) lint $(BOOTSTRAP_CHART_DIR) --strict
-	$(call check-tag-free,mto-extension-vault-enterprise-bootstrap,$(BOOTSTRAP_VERSION))
-	@mkdir -p dist
-	$(HELM) package $(BOOTSTRAP_CHART_DIR) -d dist
-	$(HELM) push dist/mto-extension-vault-enterprise-bootstrap-$(BOOTSTRAP_VERSION).tgz oci://$(HELM_REGISTRY)
+	HELM=$(HELM) ./hack/release-chart.sh $(TENANT_CHART_DIR) $(HELM_REGISTRY)
+	HELM=$(HELM) ./hack/release-chart.sh $(BOOTSTRAP_CHART_DIR) $(HELM_REGISTRY)
+
+.PHONY: version-bump-check
+version-bump-check: ## PR check: a chart that changed against BASE must bump its version.
+	./hack/version-bump-check.sh $(BASE) $(TENANT_CHART_DIR) $(BOOTSTRAP_CHART_DIR)
+
+BASE ?= origin/main
 
 # ─── Tools ───────────────────────────────────────────────────────────
 
@@ -231,9 +235,14 @@ yq: ## Ensure a yq binary of at least $(YQ_MIN) is available.
 # brings its own tenants, so it runs against the plain lab. It needs Vault
 # ENTERPRISE — it refuses Community Edition, where namespaces are ignored.
 E2E_WAIT_TIMEOUT ?= 4m
+# Set by e2e-kind: a failed run keeps its state for e2e-diagnostics.
+E2E_KEEP_ON_FAILURE ?=
+# go test's own limit. Keep it below the CI job's timeout-minutes (e2e.yaml)
+# minus the lab build: a job killed by CI runs no diagnostics.
+E2E_GO_TIMEOUT ?= 45m
 
 .PHONY: e2e-up
-e2e-up: lab-cluster lab-cert-manager lab-tenant-crd lab-tov2 lab-eso lab-reloader lab-vault lab-vco lab-chart-repo ## The lab without the bootstrap chart: what the e2e suite starts from.
+e2e-up: lab-cluster lab-cert-manager lab-tenant-crd lab-tov2 lab-eso lab-reloader lab-vault lab-keycloak lab-dex lab-vco lab-chart-repo ## The lab without the bootstrap chart: what the e2e suite starts from.
 	$(MAKE) lab-vault-bootstrap VERIFY_LOGIN=0
 
 .PHONY: e2e-test
@@ -244,11 +253,15 @@ e2e-test: helm ## Run tests/e2e against the lab. E2E_KEEP=1 leaves the install i
 		E2E_CONFIG_NAMESPACE=$(CONFIG_NS) E2E_VAULT_NAMESPACE=$(VAULT_NS) \
 		E2E_VAULT_SERVER=http://vault.$(VAULT_NS).svc:8200 \
 		E2E_WAIT_TIMEOUT=$(E2E_WAIT_TIMEOUT) E2E_VCO_SYNC_PERIOD=$(VCO_SYNC_PERIOD_SECONDS)s \
-		go test ./tests/e2e/ -count=1 -v -timeout 60m
+		E2E_KEEP_ON_FAILURE=$(E2E_KEEP_ON_FAILURE) \
+		E2E_VCO_NAMESPACE=$(VCO_NS) E2E_VCO_DEPLOYMENT=$(VCO_RELEASE) \
+		E2E_DEX_ISSUER=$(DEX_ISSUER) E2E_KEYCLOAK_URL=$(KEYCLOAK_URL) \
+		E2E_DEX_NAMESPACE=$(DEX_NS) E2E_KEYCLOAK_NAMESPACE=$(KEYCLOAK_NS) \
+		go test ./tests/e2e/ -count=1 -v -timeout $(E2E_GO_TIMEOUT)
 
 .PHONY: e2e-kind
 e2e-kind: ## Build the lab and run the suite. Needs VAULT_LICENSE_FILE. Dumps ./e2e-logs on failure.
-	$(MAKE) e2e-up && $(MAKE) e2e-test || { $(MAKE) e2e-diagnostics; exit 1; }
+	$(MAKE) e2e-up && $(MAKE) e2e-test E2E_KEEP_ON_FAILURE=1 || { $(MAKE) e2e-diagnostics; exit 1; }
 
 .PHONY: e2e-diagnostics
 e2e-diagnostics: ## Dump cluster state and controller logs into ./e2e-logs.
@@ -262,12 +275,15 @@ e2e-diagnostics: ## Dump cluster state and controller logs into ./e2e-logs.
 	-$(KC) -n external-secrets logs deploy/external-secrets --tail=2000 > e2e-logs/eso.log 2>&1
 	-$(KC) -n reloader logs deploy/reloader-reloader --tail=2000 > e2e-logs/reloader.log 2>&1
 	-$(KC) -n $(VAULT_NS) logs vault-0 --tail=2000 > e2e-logs/vault.log 2>&1
+	-$(KC) -n $(DEX_NS) logs deploy/dex --tail=2000 > e2e-logs/dex.log 2>&1
+	-$(KC) -n $(DEX_NS) logs deploy/dex-config-operator-controller-manager --tail=2000 > e2e-logs/dco.log 2>&1
+	-$(KC) -n $(KEYCLOAK_NS) logs deploy/keycloak --tail=2000 > e2e-logs/keycloak.log 2>&1
 	@echo "diagnostics in ./e2e-logs"
 
 # ─── Lab ─────────────────────────────────────────────────────────────
 
 .PHONY: lab-up
-lab-up: lab-cluster lab-cert-manager lab-tenant-crd lab-tov2 lab-eso lab-reloader lab-vault lab-vco lab-chart-repo lab-bootstrap lab-vault-bootstrap ## Build the whole lab.
+lab-up: lab-cluster lab-cert-manager lab-tenant-crd lab-tov2 lab-eso lab-reloader lab-vault lab-keycloak lab-dex lab-vco lab-chart-repo lab-bootstrap lab-vault-bootstrap ## Build the whole lab.
 
 .PHONY: lab-down
 lab-down: ## Delete the lab cluster.
@@ -275,7 +291,10 @@ lab-down: ## Delete the lab cluster.
 
 .PHONY: lab-cluster
 lab-cluster: ## Create the kind cluster (idempotent).
-	@if $(KIND) get clusters | grep -qx '$(CLUSTER_NAME)'; then \
+	@# Listed on its own line: piped into grep -q, a failed `kind get` read as
+	@# "no cluster", and under pipefail grep's early exit could fail kind.
+	@clusters=$$($(KIND) get clusters) || exit $$?; \
+	if grep -qx '$(CLUSTER_NAME)' <<<"$$clusters"; then \
 		echo "kind cluster $(CLUSTER_NAME) already exists"; \
 	else \
 		$(KIND) create cluster --name $(CLUSTER_NAME) --config $(KIND_CONFIG); \
@@ -366,6 +385,63 @@ endif
 	$(KC) -n $(VAULT_NS) delete pod vault-0 --ignore-not-found --wait=true
 	$(KC) -n $(VAULT_NS) wait --for=condition=Ready pod/vault-0 --timeout=300s
 
+.PHONY: lab-keycloak
+lab-keycloak: ## Install Keycloak: realm mto, client dex, a group per tenant tier, users alice, bob, carol.
+	$(KC) create namespace $(KEYCLOAK_NS) --dry-run=client -o yaml | $(KC) apply -f -
+	@# Random secrets, made only when missing: a re-run must not change a password
+	@# that Keycloak, Dex or a running test already holds. Never printed.
+	@$(KC) -n $(KEYCLOAK_NS) get secret keycloak-admin >/dev/null 2>&1 \
+		|| $(KC) -n $(KEYCLOAK_NS) create secret generic keycloak-admin \
+			--from-literal=username=admin --from-literal=password="$$(openssl rand -hex 16)"
+	@$(KC) -n $(KEYCLOAK_NS) get secret keycloak-dex-client >/dev/null 2>&1 \
+		|| $(KC) -n $(KEYCLOAK_NS) create secret generic keycloak-dex-client \
+			--from-literal=client-secret="$$(openssl rand -hex 24)"
+	@# One password per test user; a user added later gets its own key, and an
+	@# existing password is never replaced.
+	@$(KC) -n $(KEYCLOAK_NS) get secret keycloak-test-users >/dev/null 2>&1 \
+		|| $(KC) -n $(KEYCLOAK_NS) create secret generic keycloak-test-users >/dev/null
+	@for u in $(KEYCLOAK_TEST_USERS); do \
+		have=$$($(KC) -n $(KEYCLOAK_NS) get secret keycloak-test-users -o jsonpath="{.data.$$u}") || exit 1; \
+		[ -n "$$have" ] || $(KC) -n $(KEYCLOAK_NS) patch secret keycloak-test-users --type merge \
+			-p "{\"stringData\":{\"$$u\":\"$$(openssl rand -hex 8)\"}}" >/dev/null || exit 1; \
+	done
+	$(KC) apply -f hack/lab/keycloak.yaml
+	$(KC) -n $(KEYCLOAK_NS) rollout status deploy/keycloak --timeout=300s
+	@# Dev mode keeps the realm in memory, so the setup runs on every call.
+	$(KC) -n $(KEYCLOAK_NS) delete job keycloak-setup --ignore-not-found --wait=true
+	$(KC) apply -f hack/lab/keycloak-setup-job.yaml
+	$(KC) -n $(KEYCLOAK_NS) wait --for=condition=Complete job/keycloak-setup --timeout=300s
+
+.PHONY: lab-dex
+lab-dex: ## Install DCO and Dex, connected to the lab Keycloak through Keycloak's "dex" client.
+	$(KC) create namespace $(DEX_NS) --dry-run=client -o yaml | $(KC) apply -f -
+	$(HELM) upgrade --install dex-config-operator $(DCO_CHART) --version $(DCO_CHART_VERSION) \
+		--kube-context $(CONTEXT) -n $(DEX_NS) --wait --timeout 5m
+	@# The connector's config, as DCO wants it: JSON under key "config". Built by jq
+	@# from Keycloak's dex-client Secret and piped: the client secret is never printed.
+	@$(KC) -n $(KEYCLOAK_NS) get secret keycloak-dex-client -o json \
+		| jq '{apiVersion: "v1", kind: "Secret", type: "Opaque", metadata: {name: "keycloak-connector-config", namespace: "$(DEX_NS)"}, data: {config: ({issuer: "$(KEYCLOAK_URL)/realms/mto", clientID: "dex", clientSecret: (.data["client-secret"] | @base64d), redirectURI: "$(DEX_ISSUER)/callback", scopes: ["openid", "profile", "email"], insecureEnableGroups: true} | tojson | @base64)}}' \
+		| $(KC) apply -f -
+	@$(KC) -n $(DEX_NS) get secret dex-vault-client >/dev/null 2>&1 \
+		|| $(KC) -n $(DEX_NS) create secret generic dex-vault-client \
+			--from-literal=client-secret="$$(openssl rand -hex 24)"
+	$(KC) apply -f hack/lab/dex-config.yaml
+	@# DCO writes Secret dex-config once it has seen the resources above; the Dex
+	@# pod mounts it and cannot start without it.
+	@for i in $$(seq 1 30); do $(KC) -n $(DEX_NS) get secret dex-config >/dev/null 2>&1 && break; sleep 2; done
+	@$(KC) -n $(DEX_NS) get secret dex-config >/dev/null \
+		|| { echo "error: DCO did not write Secret $(DEX_NS)/dex-config" >&2; exit 1; }
+	$(HELM) repo add dex https://charts.dexidp.io --force-update >/dev/null
+	$(HELM) upgrade --install dex dex/dex --version $(DEX_CHART_VERSION) \
+		--kube-context $(CONTEXT) -n $(DEX_NS) \
+		--set configSecret.create=false --set configSecret.name=dex-config --wait --timeout 5m
+	@# Vault fetches the issuer's discovery document from inside its pod: prove it works there.
+	@doc=$$($(KC) -n $(VAULT_NS) exec vault-0 -- wget -qO- $(DEX_ISSUER)/.well-known/openid-configuration) \
+		|| { echo "error: the Vault pod cannot reach Dex at $(DEX_ISSUER)" >&2; exit 1; }; \
+	jq -e --arg i "$(DEX_ISSUER)" '.issuer == $$i' >/dev/null <<<"$$doc" \
+		|| { echo "error: Dex's issuer is not $(DEX_ISSUER)" >&2; exit 1; }
+	@echo "Dex answers as $(DEX_ISSUER) inside the Vault pod"
+
 .PHONY: lab-vault-bootstrap
 lab-vault-bootstrap: ## Give VCO a kubernetes-auth login in Vault's root namespace, and prove it.
 	CONTEXT=$(CONTEXT) KUBECTL=$(KUBECTL) VAULT_NS=$(VAULT_NS) \
@@ -377,7 +453,10 @@ lab-vault-bootstrap: ## Give VCO a kubernetes-auth login in Vault's root namespa
 $(LOCALBIN)/gnu/sed:
 	mkdir -p $(LOCALBIN)/gnu
 	@# Linux sed is GNU sed already; macOS needs gsed (brew install gnu-sed).
-	@if sed --version 2>/dev/null | grep -q GNU; then ln -sf "$$(command -v sed)" $(LOCALBIN)/gnu/sed; \
+	@# A case on the captured output, not `sed --version | grep -q`: under pipefail
+	@# grep's early exit can fail the producer and read GNU sed as not GNU.
+	@case "$$(sed --version 2>/dev/null || true)" in *GNU*) gnu=1 ;; *) gnu=0 ;; esac; \
+	if [ "$$gnu" = 1 ]; then ln -sf "$$(command -v sed)" $(LOCALBIN)/gnu/sed; \
 	elif command -v gsed >/dev/null; then ln -sf "$$(command -v gsed)" $(LOCALBIN)/gnu/sed; \
 	else echo "error: GNU sed is required: brew install gnu-sed" >&2; exit 1; fi
 
@@ -393,23 +472,39 @@ lab-vco-build: $(LOCALBIN)/gnu/sed ## Build VCO's image and chart from VCO_SRC a
 	PATH="$(LOCALBIN)/gnu:$$PATH" $(MAKE) -C $(VCO_SRC) helmchart \
 		OPERATOR_NAME=vault-config-operator IMG=$(VCO_IMG_REPO):$(VCO_IMG_TAG) VERSION=0.0.0-lab
 
+# The VCO settings both lab-vco and lab-vco-src use.
+#   enableMonitoring=false: the chart otherwise renders a ServiceMonitor, and
+#   kind has no Prometheus CRDs (upstream issue #221).
+#   CACHE_VAULT_TOKEN=true: VCO reuses and renews one Vault token. Without it
+#   VCO logs in again on every reconcile, and with drift detection every
+#   SYNC_PERIOD_SECONDS that piles up thousands of live tokens in Vault.
+VCO_HELM_SETTINGS = --kube-context $(CONTEXT) -n $(VCO_NS) --create-namespace --skip-crds \
+	--set enableCertManager=true \
+	--set enableMonitoring=false \
+	--set 'env[0].name=VAULT_ADDR' --set 'env[0].value=http://vault.$(VAULT_NS).svc:8200' \
+	--set 'env[1].name=ENABLE_DRIFT_DETECTION' --set-string 'env[1].value=true' \
+	--set 'env[2].name=SYNC_PERIOD_SECONDS' --set-string 'env[2].value=$(VCO_SYNC_PERIOD_SECONDS)' \
+	--set 'env[3].name=CACHE_VAULT_TOKEN' --set-string 'env[3].value=true'
+
 .PHONY: lab-vco
-lab-vco: lab-vco-build ## (Re)deploy VCO from VCO_SRC, pointed at the lab Vault.
+lab-vco: helm ## Install VCO $(VCO_VERSION) from its release chart, pointed at the lab Vault.
+	$(HELM) repo add vault-config-operator $(VCO_HELM_REPO) --force-update >/dev/null
 	@# helm installs crds/ only on the first install and never upgrades them, so
-	@# the CRDs are applied explicitly: a field added in VCO_SRC must reach the
-	@# cluster, or the apiserver prunes it from every CR.
+	@# the release's CRDs are applied explicitly: a field the release adds must
+	@# reach the cluster, or the apiserver prunes it from every CR.
+	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT \
+		&& $(HELM) pull vault-config-operator/vault-config-operator --version $(VCO_VERSION) --untar -d "$$tmp" \
+		&& $(KC) apply --server-side --force-conflicts -f "$$tmp/vault-config-operator/crds/" >/dev/null \
+		&& echo "applied the CRDs of vault-config-operator $(VCO_VERSION)"
+	$(HELM) upgrade --install $(VCO_RELEASE) vault-config-operator/vault-config-operator --version $(VCO_VERSION) \
+		$(VCO_HELM_SETTINGS)
+	$(KC) -n $(VCO_NS) rollout status deploy/$(VCO_RELEASE) --timeout=300s
+
+.PHONY: lab-vco-src
+lab-vco-src: lab-vco-build ## (Re)deploy VCO built from VCO_SRC instead of the release: to test an unreleased VCO change.
 	$(KC) apply --server-side --force-conflicts -f $(VCO_CHART)/crds/
-	$(HELM) upgrade --install $(VCO_RELEASE) $(VCO_CHART) \
-		--kube-context $(CONTEXT) -n $(VCO_NS) --create-namespace --skip-crds \
-		--set enableCertManager=true \
-		--set enableMonitoring=false \
-		--set image.repository=$(VCO_IMG_REPO) \
-		--set image.tag=$(VCO_IMG_TAG) \
-		--set env[0].name=VAULT_ADDR --set env[0].value=http://vault.$(VAULT_NS).svc:8200 \
-		--set env[1].name=ENABLE_DRIFT_DETECTION --set-string env[1].value=true \
-		--set env[2].name=SYNC_PERIOD_SECONDS --set-string env[2].value=$(VCO_SYNC_PERIOD_SECONDS)
-	@# enableMonitoring=false: the chart otherwise renders a ServiceMonitor, and
-	@# kind has no Prometheus CRDs (upstream issue #221).
+	$(HELM) upgrade --install $(VCO_RELEASE) $(VCO_CHART) $(VCO_HELM_SETTINGS) \
+		--set image.repository=$(VCO_IMG_REPO) --set image.tag=$(VCO_IMG_TAG)
 	@# Same tag, new image: restart so the pod picks up the build just loaded.
 	$(KC) -n $(VCO_NS) rollout restart deploy/$(VCO_RELEASE)
 	$(KC) -n $(VCO_NS) rollout status deploy/$(VCO_RELEASE) --timeout=300s
@@ -424,8 +519,6 @@ lab-chart-repo: ## Serve THIS checkout's tenant chart from an in-cluster HTTP re
 
 .PHONY: lab-bootstrap
 lab-bootstrap: ## Install the bootstrap chart from this checkout, pulling the tenant chart from the lab repo.
-	@# ESO is not on the lab cluster, so parent.eso=disabled: an enabled eso slice
-	@# would fail every tenant's .eso TemplateInstance on the missing CRDs.
 	$(HELM) upgrade --install mto-extension-vault-enterprise-bootstrap charts/mto-extension-vault-enterprise-bootstrap \
 		--kube-context $(CONTEXT) -n $(CONFIG_NS) --create-namespace \
 		--set configNamespace=$(CONFIG_NS) \
@@ -434,15 +527,25 @@ lab-bootstrap: ## Install the bootstrap chart from this checkout, pulling the te
 		--set templateOperator.namespace=$(TOV2_NS) \
 		--set tenantChart.registry=$(CHART_REPO_URL) \
 		--set parent.vaultServer=http://vault.$(VAULT_NS).svc:8200 \
-		--set parent.eso=disabled
+		--set parent.eso=enabled \
+		--set parent.sso.enabled=true --set parent.sso.issuerUrl=$(DEX_ISSUER)
+	@# Vault's side of the Dex "vault" client: the same secret, in CONFIG_NS.
+	@$(KC) -n $(DEX_NS) get secret dex-vault-client -o json \
+		| jq '{apiVersion: "v1", kind: "Secret", type: "Opaque", metadata: {name: "vault-oidc-client-secret", namespace: "$(CONFIG_NS)"}, data: {"client-secret": .data["client-secret"]}}' \
+		| $(KC) apply -f -
 
 .PHONY: lab-uninstall
 lab-uninstall: ## Uninstall the bootstrap chart in the documented order (charts/README.md → Uninstall).
 	$(KC) -n $(CONFIG_NS) delete templateinstance mto-extension-vault-enterprise-parent --ignore-not-found --wait --timeout=5m
 	@# The RBAC and the VCO login ServiceAccount must outlive every CR they
 	@# tear down, so the release goes only once no VCO CR is left.
+	@# kubectl's status is checked before counting: piped into wc, a failed
+	@# kubectl read as "0 left" and the release went too early.
 	@left=""; for i in $$(seq 1 60); do \
-		left=$$($(KC) -n $(CONFIG_NS) get $(LAB_VCO_KINDS) --no-headers 2>/dev/null | wc -l | tr -d ' '); \
+		if ! out=$$($(KC) -n $(CONFIG_NS) get $(LAB_VCO_KINDS) -o name 2>/tmp/lab-uninstall.err); then \
+			echo "error: cannot list VCO CRs — not uninstalling the release:" >&2; cat /tmp/lab-uninstall.err >&2; exit 1; \
+		fi; \
+		left=$$(printf '%s' "$$out" | grep -c . || true); \
 		[ "$$left" = 0 ] && break; sleep 5; \
 	done; \
 	if [ "$$left" != 0 ]; then echo "error: $$left VCO CRs still in $(CONFIG_NS) after 5m — not uninstalling the release:" >&2; \

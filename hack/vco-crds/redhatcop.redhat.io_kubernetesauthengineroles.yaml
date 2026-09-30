@@ -1,4 +1,3 @@
----
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -69,8 +68,8 @@ spec:
                 properties:
                   namespace:
                     description: Namespace is the Vault namespace in which the operator
-                      authenticates. The resource is also managed in this namespace,
-                      unless TargetNamespace is set. Only available in Vault Enterprise.
+                      authenticates, and in which the resource is managed unless TargetNamespace
+                      is set. Only available in Vault Enterprise.
                     type: string
                   path:
                     default: kubernetes
@@ -99,12 +98,11 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                   targetNamespace:
-                    description: TargetNamespace is the Vault namespace in which the
-                      resource is managed, relative to Namespace. Use it to authenticate
-                      in a parent namespace (for example root) and manage the resource
-                      in a child namespace, without an auth method in the child namespace.
-                      The resource is managed in {[namespace/]}{targetNamespace}.
-                      Only available in Vault Enterprise.
+                    description: TargetNamespace is the Vault namespace (not a Kubernetes
+                      namespace) in which the resource is managed, relative to the
+                      namespace in which the operator authenticates, for example tenant-a
+                      or org/tenant-a. Only available in Vault Enterprise.
+                    pattern: ^(([^\s/]*[^\s/.][^\s/]*|\.{3,})(/([^\s/]*[^\s/.][^\s/]*|\.{3,}))*)?$
                     type: string
                 required:
                 - path
@@ -178,7 +176,7 @@ spec:
               path:
                 description: |-
                   Path at which to make the configuration.
-                  The final path in Vault will be {[spec.authentication.namespace]}/auth/{spec.path}/role/{metadata.name}.
+                  The final path in Vault will be {[spec.authentication.namespace]}/{[spec.authentication.targetNamespace]}/auth/{spec.path}/role/{metadata.name}.
                   The authentication role must have the following capabilities = [ "create", "read", "update", "delete"] on that path.
                 pattern: ^(?:/?[\w;:@&=\$-\.\+]*)+/?
                 type: string

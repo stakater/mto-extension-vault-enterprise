@@ -1,19 +1,17 @@
 # Vendored vault-config-operator CRDs
 
-The 8 VCO CRDs the charts render, used by `make crd-validate`. Vendored because
-the charts depend on two VCO changes that are in no release yet:
+The 8 VCO CRDs the charts render, used by `make crd-validate`, so the render
+tests validate against the exact schema the lab and CI install, without a
+cluster or a network call.
 
-- `spec.authentication.targetNamespace` (upstream issue
-  [#291](https://github.com/redhat-cop/vault-config-operator/issues/291)) — in
-  every CRD here.
-- The `Namespace` controller fix — a controller change, not a schema change.
+Source: the `vault-config-operator` **v1.0.3** release chart
+(`https://redhat-cop.github.io/vault-config-operator`), the first release with
+`spec.authentication.targetNamespace` and the `Namespace` controller fix
+(upstream PR [#373](https://github.com/redhat-cop/vault-config-operator/pull/373)).
 
-Source: `redhat-cop/vault-config-operator` at `af9eeb1` (2026-09-03) plus the
-unmerged `feat/target-namespace` change, generated with `make manifests`.
-
-Refresh with `make vco-crds-sync VCO_SRC=<checkout>` and update the source line
-above. Once a VCO release contains the field, replace this copy with that
-release's CRDs.
+Refresh with `make vco-crds-sync` (from the `VCO_VERSION` release chart) and
+update the source line above. To test an unreleased VCO change, use
+`make vco-crds-sync-src VCO_SRC=<checkout>` instead.
 
 A kind the charts render without a CRD here fails `crd-validate` ("no CRD for
 …"), so adding a kind means adding its CRD.

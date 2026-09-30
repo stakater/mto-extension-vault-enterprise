@@ -82,7 +82,7 @@ spec:
       {{- end }}
       path: kv
       version: v2
-      namespace: {{ $sharedNs }}
+      namespace: {{ $sharedNs | quote }}
       auth:
         kubernetes:
           mountPath: {{ $k8sMount }}
