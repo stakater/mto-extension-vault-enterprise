@@ -325,7 +325,7 @@ lab-tenant-crd: ## Install MTO's Tenant CRD (only the CRD, not MTO).
 	$(call wait-crd,tenants.tenantoperator.stakater.com)
 
 .PHONY: lab-tov2
-lab-tov2: ## Install template-operator-v2 from its public chart.
+lab-tov2: helm ## Install template-operator-v2 from its public chart.
 	$(KC) create namespace $(TOV2_NS) --dry-run=client -o yaml | $(KC) apply -f -
 	$(HELM) upgrade --install $(TOV2_RELEASE) $(TOV2_CHART) --version $(TOV2_CHART_VERSION) \
 		--kube-context $(CONTEXT) -n $(TOV2_NS) --reset-values
@@ -338,7 +338,7 @@ lab-tov2: ## Install template-operator-v2 from its public chart.
 	$(KC) -n $(TOV2_NS) rollout status deploy/$(TOV2_DEPLOYMENT) --timeout=300s
 
 .PHONY: lab-eso
-lab-eso: ## Install External Secrets Operator (the .eso slice's SecretStore/ExternalSecret).
+lab-eso: helm ## Install External Secrets Operator (the .eso slice's SecretStore/ExternalSecret).
 	$(HELM) repo add external-secrets https://charts.external-secrets.io --force-update >/dev/null
 	$(HELM) upgrade --install external-secrets external-secrets/external-secrets \
 		--version $(ESO_CHART_VERSION) \
@@ -347,7 +347,7 @@ lab-eso: ## Install External Secrets Operator (the .eso slice's SecretStore/Exte
 	$(call wait-crd,secretstores.external-secrets.io externalsecrets.external-secrets.io)
 
 .PHONY: lab-reloader
-lab-reloader: ## Install Stakater Reloader: restarts a Deployment when a Secret or ConfigMap it uses changes.
+lab-reloader: helm ## Install Stakater Reloader: restarts a Deployment when a Secret or ConfigMap it uses changes.
 	$(HELM) repo add stakater https://stakater.github.io/stakater-charts --force-update >/dev/null
 	$(HELM) upgrade --install reloader stakater/reloader \
 		--version $(RELOADER_CHART_VERSION) \
@@ -355,7 +355,7 @@ lab-reloader: ## Install Stakater Reloader: restarts a Deployment when a Secret 
 		--wait --timeout 5m
 
 .PHONY: lab-vault
-lab-vault: ## Install Vault in dev mode. VAULT_EDITION=ent (needs VAULT_LICENSE_FILE) or ce.
+lab-vault: helm ## Install Vault in dev mode. VAULT_EDITION=ent (needs VAULT_LICENSE_FILE) or ce.
 	@case "$(VAULT_EDITION)" in \
 		ent) if [ -z "$(VAULT_LICENSE_FILE)" ] || [ ! -r "$(VAULT_LICENSE_FILE)" ]; then \
 			echo "error: VAULT_EDITION=ent needs VAULT_LICENSE_FILE=<readable .hclic file>; got '$(VAULT_LICENSE_FILE)'." >&2; \
@@ -383,10 +383,13 @@ endif
 	@# The chart's StatefulSet uses OnDelete, so an upgrade (image, licence) only
 	@# reaches the pod when the pod is deleted. Dev mode is in-memory anyway.
 	$(KC) -n $(VAULT_NS) delete pod vault-0 --ignore-not-found --wait=true
+	@# kubectl wait fails at once on a pod that does not exist yet, and the
+	@# StatefulSet takes a moment to create it (on a first install, too).
+	@for i in $$(seq 1 60); do $(KC) -n $(VAULT_NS) get pod vault-0 >/dev/null 2>&1 && break; sleep 2; done
 	$(KC) -n $(VAULT_NS) wait --for=condition=Ready pod/vault-0 --timeout=300s
 
 .PHONY: lab-keycloak
-lab-keycloak: ## Install Keycloak: realm mto, client dex, a group per tenant tier, users alice, bob, carol.
+lab-keycloak: ## Install Keycloak: realm mto, client dex, a group per tenant tier, five test users.
 	$(KC) create namespace $(KEYCLOAK_NS) --dry-run=client -o yaml | $(KC) apply -f -
 	@# Random secrets, made only when missing: a re-run must not change a password
 	@# that Keycloak, Dex or a running test already holds. Never printed.
@@ -413,7 +416,7 @@ lab-keycloak: ## Install Keycloak: realm mto, client dex, a group per tenant tie
 	$(KC) -n $(KEYCLOAK_NS) wait --for=condition=Complete job/keycloak-setup --timeout=300s
 
 .PHONY: lab-dex
-lab-dex: ## Install DCO and Dex, connected to the lab Keycloak through Keycloak's "dex" client.
+lab-dex: helm ## Install DCO and Dex, connected to the lab Keycloak through Keycloak's "dex" client.
 	$(KC) create namespace $(DEX_NS) --dry-run=client -o yaml | $(KC) apply -f -
 	$(HELM) upgrade --install dex-config-operator $(DCO_CHART) --version $(DCO_CHART_VERSION) \
 		--kube-context $(CONTEXT) -n $(DEX_NS) --wait --timeout 5m
@@ -501,7 +504,7 @@ lab-vco: helm ## Install VCO $(VCO_VERSION) from its release chart, pointed at t
 	$(KC) -n $(VCO_NS) rollout status deploy/$(VCO_RELEASE) --timeout=300s
 
 .PHONY: lab-vco-src
-lab-vco-src: lab-vco-build ## (Re)deploy VCO built from VCO_SRC instead of the release: to test an unreleased VCO change.
+lab-vco-src: helm lab-vco-build ## (Re)deploy VCO built from VCO_SRC instead of the release: to test an unreleased VCO change.
 	$(KC) apply --server-side --force-conflicts -f $(VCO_CHART)/crds/
 	$(HELM) upgrade --install $(VCO_RELEASE) $(VCO_CHART) $(VCO_HELM_SETTINGS) \
 		--set image.repository=$(VCO_IMG_REPO) --set image.tag=$(VCO_IMG_TAG)
@@ -512,13 +515,13 @@ lab-vco-src: lab-vco-build ## (Re)deploy VCO built from VCO_SRC instead of the r
 CHART_REPO_URL ?= http://chart-repo.chart-repo.svc.cluster.local
 
 .PHONY: lab-chart-repo
-lab-chart-repo: ## Serve THIS checkout's tenant chart from an in-cluster HTTP repo for t-op-v2 to pull.
+lab-chart-repo: helm ## Serve THIS checkout's tenant chart from an in-cluster HTTP repo for t-op-v2 to pull.
 	$(KC) apply -f hack/lab/chart-repo.yaml
 	KUBECTL=$(KUBECTL) HELM=$(HELM) E2E_CONTEXT=$(CONTEXT) CHART_DIR=charts/mto-extension-vault-enterprise \
 		./hack/lab/chart-repo-publish.sh
 
 .PHONY: lab-bootstrap
-lab-bootstrap: ## Install the bootstrap chart from this checkout, pulling the tenant chart from the lab repo.
+lab-bootstrap: helm ## Install the bootstrap chart from this checkout, pulling the tenant chart from the lab repo.
 	$(HELM) upgrade --install mto-extension-vault-enterprise-bootstrap charts/mto-extension-vault-enterprise-bootstrap \
 		--kube-context $(CONTEXT) -n $(CONFIG_NS) --create-namespace \
 		--set configNamespace=$(CONFIG_NS) \
@@ -535,7 +538,7 @@ lab-bootstrap: ## Install the bootstrap chart from this checkout, pulling the te
 		| $(KC) apply -f -
 
 .PHONY: lab-uninstall
-lab-uninstall: ## Uninstall the bootstrap chart in the documented order (charts/README.md → Uninstall).
+lab-uninstall: helm ## Uninstall the bootstrap chart in the documented order (charts/README.md → Uninstall).
 	$(KC) -n $(CONFIG_NS) delete templateinstance mto-extension-vault-enterprise-parent --ignore-not-found --wait --timeout=5m
 	@# The RBAC and the VCO login ServiceAccount must outlive every CR they
 	@# tear down, so the release goes only once no VCO CR is left.
