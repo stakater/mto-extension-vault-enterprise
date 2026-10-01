@@ -234,6 +234,32 @@ when Keycloak sits behind Dex. Log in with:
 VAULT_NAMESPACE=<tenant> vault login -method=oidc -path=oidc/sso role=sso.<tenant>.editor
 ```
 
+### What each tier sees in the Vault UI
+
+Tenant `acme`, app `checkout` in namespace `acme-shop`. Each user's Keycloak
+group gives the tier.
+
+The app's secrets, under its own prefix `dev/acme-shop/checkout/`:
+
+![The kv list of dev/acme-shop/checkout/, with the secrets db and payment-gateway](../docs/screenshots/captured/vault-kv-list.png)
+
+**Editor** (`acme-editors`): reads the keys, with the values masked, and can
+write a new version.
+
+![The secret db for an editor: its keys, and the Create new version button](../docs/screenshots/captured/vault-kv-secret-editor.png)
+
+**Viewer** (`acme-viewers`): reads the same keys, and cannot write.
+
+![The secret db for a viewer: the same keys, with no Create new version button](../docs/screenshots/captured/vault-kv-secret-viewer.png)
+
+**Audit-read** (`acme-audit-reads`): lists the same secret names as in the
+first image, and cannot read a value.
+
+![The secret db for audit-read: "You do not have permission to read this secret"](../docs/screenshots/captured/vault-kv-no-read.png)
+
+The e2e suite takes these images and checks each view
+([docs/screenshots/](../docs/screenshots/)).
+
 ## Monitoring
 
 `tenantValues.monitoring.enabled=true` gives each tenant a PrometheusRule with

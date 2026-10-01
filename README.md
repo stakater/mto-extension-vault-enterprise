@@ -18,10 +18,12 @@ v1.0.3 or later (see
 | [hack/crd-validate/](hack/crd-validate/) | validates rendered VCO CRs through the apiserver's admission pipeline |
 | [hack/render-fixtures/](hack/render-fixtures/) | fixtures and the golden render |
 | [hack/lab/](hack/lab/) | the local kind lab |
+| [docs/screenshots/](docs/screenshots/) | the UI flows and the images they take for the docs |
 
 ```bash
 make                  # everything CI runs: lint, render tests, CRD validation
 make vco-crds-sync    # refresh the vendored VCO CRDs from the VCO_VERSION release
+make screenshots      # copy the last e2e run's UI images into docs/screenshots/captured/
 ```
 
 `crd-validate` checks against a vendored copy of the VCO v1.0.3 CRDs in
@@ -47,6 +49,7 @@ uninstall.
 | tiers | admin can destroy versions, an editor cannot; audit-read can list but not read |
 | sso | Keycloak users log in through Dex; a group gives exactly its tier, in its own tenant only (see below) |
 | sso tiers | audit-read lists and reads no data; the editor cannot destroy a version, the admin can |
+| ui | browser-runner flows in the Vault UI, as the SSO users of the docs tenant `acme`: the editor sees the app's secrets and "Create new version", the viewer the keys without it, audit-read the names and "You do not have permission"; the images are the docs' ([docs/screenshots/](docs/screenshots/)) |
 | configmap | `vault-config-<sa>` has the right values, and logging in and reading with exactly those values works; `vault-apps` indexes the app |
 | template-operator | a deleted `vault-config-<sa>` comes back with the same values (`sync.mode=revert`) |
 | eso | a Deployment's `kv-secret.<name>` becomes a Kubernetes Secret, and the pod sees it |
@@ -138,6 +141,7 @@ make lab-down
 | VCO v1.0.3 (`VCO_VERSION`) | from its release chart; `make lab-vco-src` builds `VCO_SRC` instead, to test an unreleased change |
 | Keycloak 26.4.0 | SSO users and groups: realm `mto`, client `dex` |
 | DCO 0.0.7 and Dex 2.45.1 | SSO: Dex, configured by the Dex Config Operator, in front of Keycloak |
+| browser-runner v0.3.0 (`RUNNER_IMAGE`) | the ui step's flows. The published image is amd64 only: on an arm64 machine, `make lab-runner-image RUNNER_SRC=<checkout>` builds it |
 
 `lab-up` also serves this checkout's tenant chart from an in-cluster HTTP repo
 (`lab-chart-repo`) and installs the bootstrap chart from this checkout

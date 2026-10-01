@@ -43,6 +43,10 @@ import (
 //	alice e2e-alpha-editors   bob e2e-alpha-viewers   dave e2e-alpha-audit-reads
 //	erin  e2e-alpha-admins    carol e2e-beta-admins
 //
+// and in the docs tenant acme, which only the ui step creates (ui.go):
+//
+//	alice acme-editors        bob acme-viewers        dave acme-audit-reads
+//
 // Names are short on purpose: the child TemplateInstance name is
 // mto-extension-vault-enterprise-<tenant>[.eso], capped at 63 characters.
 const (
@@ -103,11 +107,13 @@ func TestE2E(t *testing.T) {
 		}
 		deleteTenant(t, alpha, alphaNS, toolsNS)
 		deleteTenant(t, beta, betaNS)
+		deleteTenant(t, docsTenant, docsNS)
+		deleteUINamespace(t)
 		// Vault state a failed run left behind would make the root checks below
 		// pass without this run creating anything. The lab Vault is dev mode, so
 		// root may remove it.
 		// The shared namespace too: the render step checks that it exists.
-		leftover := []string{alpha, beta, sharedNS}
+		leftover := []string{alpha, beta, docsTenant, sharedNS}
 		for _, n := range leftover {
 			if slices.Contains(vaultNamespaces(t), n) {
 				vaultIn(t, "", "namespace", "delete", n)
@@ -137,7 +143,7 @@ func TestE2E(t *testing.T) {
 	// e2e-diagnostics runs after go test exits, and a teardown first would
 	// leave it nothing to dump. The next run's preflight removes that state.
 	//
-	// Three cleanups, not one: they run in reverse order of registration, and
+	// One cleanup per job, not one for all: they run in reverse order of registration, and
 	// a t.Fatalf inside one ends only that one, so a failed uninstall does not
 	// skip the tenant deletion.
 	if os.Getenv("E2E_KEEP") == "" {
@@ -150,6 +156,12 @@ func TestE2E(t *testing.T) {
 		t.Cleanup(func() {
 			if !keep() {
 				deleteTenant(t, alpha, alphaNS, toolsNS)
+			}
+		})
+		t.Cleanup(func() {
+			if !keep() {
+				deleteTenant(t, docsTenant, docsNS)
+				deleteUINamespace(t)
 			}
 		})
 		t.Cleanup(func() {
@@ -619,6 +631,10 @@ func TestE2E(t *testing.T) {
 		if _, err := vaultRun(t, erinToken, alpha, "kv", "destroy", "-mount=kv", "-versions=1", note); err != nil {
 			t.Errorf("the SSO admin could not destroy a version: %v", err)
 		}
+	})
+
+	step("ui: the Vault UI shows each SSO tier its own view (browser-runner)", func(t *testing.T) {
+		runUISteps(t)
 	})
 
 	step("configmap: vault-config-<sa> describes a working login", func(t *testing.T) {

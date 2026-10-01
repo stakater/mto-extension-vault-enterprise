@@ -114,7 +114,7 @@ VCO_CRD_KINDS := namespaces secretenginemounts authenginemounts kubernetesauthen
                  kubernetesauthengineroles policies jwtoidcauthengineconfigs jwtoidcauthengineroles
 
 .PHONY: all
-all: helm-lint helm-render-test crd-validate ## Everything CI runs: lint, render tests (incl. version pin), CRD schema check.
+all: helm-lint helm-render-test crd-validate screenshots-check ## Everything CI runs: lint, render tests (incl. version pin), CRD schema check, docs images.
 
 .PHONY: helm-lint
 helm-lint: helm ## Lint both charts.
@@ -242,7 +242,7 @@ E2E_KEEP_ON_FAILURE ?=
 E2E_GO_TIMEOUT ?= 45m
 
 .PHONY: e2e-up
-e2e-up: lab-cluster lab-cert-manager lab-tenant-crd lab-tov2 lab-eso lab-reloader lab-vault lab-keycloak lab-dex lab-vco lab-chart-repo ## The lab without the bootstrap chart: what the e2e suite starts from.
+e2e-up: lab-cluster lab-cert-manager lab-tenant-crd lab-tov2 lab-eso lab-reloader lab-vault lab-keycloak lab-dex lab-vco lab-chart-repo lab-runner-image ## The lab without the bootstrap chart: what the e2e suite starts from.
 	$(MAKE) lab-vault-bootstrap VERIFY_LOGIN=0
 
 .PHONY: e2e-test
@@ -257,7 +257,22 @@ e2e-test: helm ## Run tests/e2e against the lab. E2E_KEEP=1 leaves the install i
 		E2E_VCO_NAMESPACE=$(VCO_NS) E2E_VCO_DEPLOYMENT=$(VCO_RELEASE) \
 		E2E_DEX_ISSUER=$(DEX_ISSUER) E2E_KEYCLOAK_URL=$(KEYCLOAK_URL) \
 		E2E_DEX_NAMESPACE=$(DEX_NS) E2E_KEYCLOAK_NAMESPACE=$(KEYCLOAK_NS) \
+		E2E_RUNNER_IMAGE=$(RUNNER_IMAGE) \
 		go test ./tests/e2e/ -count=1 -v -timeout $(E2E_GO_TIMEOUT)
+
+.PHONY: screenshots
+screenshots: ## Copy the last e2e run's UI screenshots into docs/screenshots/captured/, to review and commit.
+	@ls e2e-logs/screenshots/*/*.png >/dev/null 2>&1 \
+		|| { echo "error: no screenshots in e2e-logs/screenshots/ - run make e2e-test first" >&2; exit 1; }
+	@# screenshot-<time>.png is a flow's on-failure diagnostic, not a docs image.
+	@for f in e2e-logs/screenshots/*/*.png; do \
+		case "$$(basename "$$f")" in screenshot-*) ;; *) cp "$$f" docs/screenshots/captured/ ;; esac; \
+	done
+	@echo "updated docs/screenshots/captured/ - review with git diff, then commit"
+
+.PHONY: screenshots-check
+screenshots-check: ## Every docs image reference resolves to docs/screenshots/captured/, and every captured image is used.
+	./hack/screenshots-check.sh
 
 .PHONY: e2e-kind
 e2e-kind: ## Build the lab and run the suite. Needs VAULT_LICENSE_FILE. Dumps ./e2e-logs on failure.
@@ -513,6 +528,23 @@ lab-vco-src: helm lab-vco-build ## (Re)deploy VCO built from VCO_SRC instead of 
 	$(KC) -n $(VCO_NS) rollout status deploy/$(VCO_RELEASE) --timeout=300s
 
 CHART_REPO_URL ?= http://chart-repo.chart-repo.svc.cluster.local
+
+# browser-runner, for the e2e suite's UI flows (docs/screenshots/). CI pulls the
+# published image (amd64 only). On an arm64 machine, build it from a checkout of
+# stakater-ab/browser-runner at this tag: make lab-runner-image RUNNER_SRC=<dir>.
+RUNNER_IMAGE ?= ghcr.io/stakater/browser-runner:v0.3.0
+RUNNER_SRC   ?=
+
+.PHONY: lab-runner-image
+lab-runner-image: ## Load RUNNER_IMAGE into kind: built from RUNNER_SRC, else the local image, else pulled (needs a ghcr.io login).
+	@if [ -n "$(RUNNER_SRC)" ]; then \
+		$(CONTAINER_TOOL) build -t $(RUNNER_IMAGE) $(RUNNER_SRC); \
+	elif ! $(CONTAINER_TOOL) image inspect $(RUNNER_IMAGE) >/dev/null 2>&1; then \
+		$(CONTAINER_TOOL) pull $(RUNNER_IMAGE); \
+	fi
+	@# Imported into the node's containerd, as lab-vco-build does.
+	$(CONTAINER_TOOL) save $(RUNNER_IMAGE) | \
+		$(CONTAINER_TOOL) exec -i $(CLUSTER_NAME)-control-plane ctr --namespace=k8s.io images import --digests -
 
 .PHONY: lab-chart-repo
 lab-chart-repo: helm ## Serve THIS checkout's tenant chart from an in-cluster HTTP repo for t-op-v2 to pull.

@@ -1,0 +1,26 @@
+# bob is in the Keycloak group acme-viewers: the viewer tier reads, and
+# cannot write. The editor flow is the matching allow: alice sees the same
+# button on the same page.
+name: vault-kv-viewer
+
+requires:
+  env: [VAULT_URL, TENANT, DB_SECRET, BOB_TOKEN]
+
+viewport: { width: 1440, height: 900, deviceScaleFactor: 2, colorScheme: light }
+
+steps:
+  # Token login: the Vault UI production build strips data-test-* attributes
+  # from the login form (ember-test-selectors), so these are name and type.
+  - { step: open, url: "${VAULT_URL}/ui/vault/auth?namespace=${TENANT}&with=token" }
+  - { step: fill, selector: 'input[name="token"]', value: "${BOB_TOKEN}" }
+  - { step: click, selector: 'button[type="submit"]' }
+  - { step: wait-for-url, url: "/ui/vault/dashboard" }
+
+  # The keys render first, so the page is loaded when the button is checked.
+  - { step: open, url: "${VAULT_URL}/ui/vault/secrets-engines/kv/kv/${DB_SECRET}/details?namespace=${TENANT}" }
+  - { step: wait-for, selector: '[data-test-row-label="username"]' }
+  - { step: wait-for, selector: '[data-test-create-new-version]', state: hidden }
+  - { step: screenshot, path: vault-kv-secret-viewer.png, fullPage: false }
+
+after:
+  - { step: screenshot, when: on-failure }

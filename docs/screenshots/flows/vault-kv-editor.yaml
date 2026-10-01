@@ -1,0 +1,32 @@
+# alice is in the Keycloak group acme-editors, so her SSO login gives the
+# editor tier. The e2e suite logs her in through Keycloak and Dex, and this
+# flow logs in to the UI with the Vault token that gives.
+name: vault-kv-editor
+
+requires:
+  env: [VAULT_URL, TENANT, APP_PATH, DB_SECRET, ALICE_TOKEN]
+
+viewport: { width: 1440, height: 900, deviceScaleFactor: 2, colorScheme: light }
+
+steps:
+  # Token login: the Vault UI production build strips data-test-* attributes
+  # from the login form (ember-test-selectors), so these are name and type.
+  - { step: open, url: "${VAULT_URL}/ui/vault/auth?namespace=${TENANT}&with=token" }
+  - { step: fill, selector: 'input[name="token"]', value: "${ALICE_TOKEN}" }
+  - { step: click, selector: 'button[type="submit"]' }
+  - { step: wait-for-url, url: "/ui/vault/dashboard" }
+
+  # The app's own prefix lists its secrets.
+  - { step: open, url: "${VAULT_URL}/ui/vault/secrets-engines/kv/kv/list/${APP_PATH}/?namespace=${TENANT}" }
+  - { step: wait-for, selector: '[data-test-list-item="db"]' }
+  - { step: wait-for, selector: '[data-test-list-item="payment-gateway"]' }
+  - { step: screenshot, path: vault-kv-list.png, fullPage: false }
+
+  # An editor reads the keys (values stay masked) and may write a new version.
+  - { step: open, url: "${VAULT_URL}/ui/vault/secrets-engines/kv/kv/${DB_SECRET}/details?namespace=${TENANT}" }
+  - { step: wait-for, selector: '[data-test-row-label="username"]' }
+  - { step: wait-for, selector: '[data-test-create-new-version]' }
+  - { step: screenshot, path: vault-kv-secret-editor.png, fullPage: false }
+
+after:
+  - { step: screenshot, when: on-failure }

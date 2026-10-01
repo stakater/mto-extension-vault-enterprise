@@ -50,6 +50,14 @@
 //	E2E_DEX_ISSUER, E2E_KEYCLOAK_URL, E2E_DEX_NAMESPACE, E2E_KEYCLOAK_NAMESPACE
 //	                       where Dex and Keycloak run; defaults match the lab
 //
+// The ui step runs the browser-runner flows in docs/screenshots/flows/ against
+// the lab's Vault UI, in a Pod in the cluster (ui.go), and writes their
+// screenshots to e2e-logs/screenshots/ (make screenshots copies them into the
+// docs).
+//
+//	E2E_RUNNER_IMAGE       the browser-runner image, loaded into kind by
+//	                       make lab-runner-image
+//
 // # Live mutations
 //
 // A denial is trusted only after a live mutation: break the guard in a copy of
@@ -72,6 +80,10 @@
 //   - a mount without listingVisibility: VCO's finalizer (render step)
 //   - a production VCO policy that may delete the namespace and the kv mount:
 //     the kept data CRs (offboarding step)
+//   - the viewer UI flow run with the editor's token: "Create new version"
+//     appears, and the flow fails (ui step)
+//   - the audit-read UI flow run with the viewer's token: the secret reads,
+//     and the flow fails (ui step)
 //
 // Not mutated yet: the logins that change one binding, the subscriber's
 // metadata update, the tier change, the revocation of an issued token, the
@@ -142,6 +154,7 @@ var (
 	keycloakURL  string
 	dexNS        string
 	keycloakNS   string
+	runnerImage  string
 
 	dyn  dynamic.Interface
 	kube kubernetes.Interface
@@ -188,6 +201,7 @@ func TestMain(m *testing.M) {
 	keycloakNS = envOr("E2E_KEYCLOAK_NAMESPACE", "keycloak")
 	dexIssuer = envOr("E2E_DEX_ISSUER", "http://dex.dex.svc.cluster.local:5556")
 	keycloakURL = envOr("E2E_KEYCLOAK_URL", "http://keycloak.keycloak.svc.cluster.local:8080")
+	runnerImage = envOr("E2E_RUNNER_IMAGE", "ghcr.io/stakater/browser-runner:v0.3.0")
 	var err error
 	if waitTimeout, err = time.ParseDuration(envOr("E2E_WAIT_TIMEOUT", "4m")); err != nil {
 		println("E2E_WAIT_TIMEOUT:", err.Error())

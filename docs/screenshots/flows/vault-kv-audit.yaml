@@ -1,0 +1,28 @@
+# dave is in the Keycloak group acme-audit-reads: the audit-read tier lists
+# secret names, and cannot read a value.
+name: vault-kv-audit
+
+requires:
+  env: [VAULT_URL, TENANT, APP_PATH, DB_SECRET, DAVE_TOKEN]
+
+viewport: { width: 1440, height: 900, deviceScaleFactor: 2, colorScheme: light }
+
+steps:
+  # Token login: the Vault UI production build strips data-test-* attributes
+  # from the login form (ember-test-selectors), so these are name and type.
+  - { step: open, url: "${VAULT_URL}/ui/vault/auth?namespace=${TENANT}&with=token" }
+  - { step: fill, selector: 'input[name="token"]', value: "${DAVE_TOKEN}" }
+  - { step: click, selector: 'button[type="submit"]' }
+  - { step: wait-for-url, url: "/ui/vault/dashboard" }
+
+  - { step: open, url: "${VAULT_URL}/ui/vault/secrets-engines/kv/kv/list/${APP_PATH}/?namespace=${TENANT}" }
+  # Listing works: the matching allow for the refused read below. The page is
+  # the editor's list (vault-kv-list.png), so it is not shot again.
+  - { step: wait-for, selector: '[data-test-list-item="db"]' }
+
+  - { step: open, url: "${VAULT_URL}/ui/vault/secrets-engines/kv/kv/${DB_SECRET}/details?namespace=${TENANT}" }
+  - { step: wait-for, selector: '[data-test-empty-state-title]:has-text("You do not have permission to read this secret")' }
+  - { step: screenshot, path: vault-kv-no-read.png, fullPage: false }
+
+after:
+  - { step: screenshot, when: on-failure }

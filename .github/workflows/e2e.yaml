@@ -7,9 +7,12 @@ name: E2E
 # runs when a human asks for it: on approval, by adding the label, or by
 # dispatch.
 #
-# One input beyond the code:
+# Inputs beyond the code:
 #   - secrets.VAULT_LICENSE   the Vault Enterprise licence text. The suite
 #                             refuses Community Edition, which ignores namespaces.
+#   - secrets.GHCR_USERNAME, secrets.GHCR_TOKEN
+#                             read access to ghcr.io/stakater/browser-runner, the
+#                             private image the suite's ui step runs its flows in.
 on:
   pull_request_review:
     types: [submitted]
@@ -81,8 +84,27 @@ jobs:
           if [ -z "$VAULT_LICENSE" ]; then echo "secrets.VAULT_LICENSE is not set" >&2; exit 1; fi
           printf '%s' "$VAULT_LICENSE" > "$RUNNER_TEMP/vault.hclic"
 
+      # make lab-runner-image pulls RUNNER_IMAGE and loads it into kind.
+      - name: Log in to ghcr.io for the browser-runner image
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GHCR_USERNAME }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
       - name: Build the lab and run the suite
         run: make e2e-kind VAULT_LICENSE_FILE="$RUNNER_TEMP/vault.hclic"
+
+      # The ui step's screenshots, to review; make screenshots puts them in the
+      # docs. On a failure they are in the diagnostics below.
+      - name: Upload screenshots
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-${{ github.run_id }}
+          path: ./e2e-logs/screenshots/
+          retention-days: 14
+          if-no-files-found: error
 
       # e2e-kind writes these on any failure in the chain.
       - name: Upload diagnostics

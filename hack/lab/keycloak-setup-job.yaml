@@ -9,6 +9,8 @@
 #                  carol  e2e-beta-admins
 #                  dave   e2e-alpha-audit-reads
 #                  erin   e2e-alpha-admins
+#                  and, for the UI screenshots of the docs tenant acme:
+#                  alice acme-editors, bob acme-viewers, dave acme-audit-reads
 #
 # Idempotent: `make lab-keycloak` deletes the Job and applies this file again.
 # Every secret comes from a Secret through env; none is in this file.
@@ -77,6 +79,10 @@ data:
     user carol e2e-beta-admins   "$CAROL_PASSWORD"
     user dave  e2e-alpha-audit-reads "$DAVE_PASSWORD"
     user erin  e2e-alpha-admins  "$ERIN_PASSWORD"
+    # A second group for the same user: user() finds it and adds the membership.
+    user alice acme-editors      "$ALICE_PASSWORD"
+    user bob   acme-viewers      "$BOB_PASSWORD"
+    user dave  acme-audit-reads  "$DAVE_PASSWORD"
     echo "realm mto configured"
 ---
 apiVersion: batch/v1
@@ -94,8 +100,9 @@ spec:
           image: quay.io/keycloak/keycloak:26.4.0
           command: ["/bin/bash", "/setup/setup.sh"]
           env:
-            # The e2e suite's tenants, and the lab's sample tenants.
-            - { name: TENANTS, value: "e2e-alpha e2e-beta team-a team-b" }
+            # The e2e suite's tenants, its docs tenant (UI screenshots), and the
+            # lab's sample tenants.
+            - { name: TENANTS, value: "e2e-alpha e2e-beta acme team-a team-b" }
             - name: ADMIN_USER
               valueFrom: { secretKeyRef: { name: keycloak-admin, key: username } }
             - name: ADMIN_PASSWORD
