@@ -14,7 +14,7 @@ v1.0.3 or later (see
 | Path | What |
 |---|---|
 | [charts/](charts/) | the two charts and their user documentation |
-| [hack/chart-render-tests.sh](hack/chart-render-tests.sh) | the render tests (38 checks) — the quality gate |
+| [hack/chart-render-tests.sh](hack/chart-render-tests.sh) | the render tests (39 checks) — the quality gate |
 | [hack/crd-validate/](hack/crd-validate/) | validates rendered VCO CRs through the apiserver's admission pipeline |
 | [hack/render-fixtures/](hack/render-fixtures/) | fixtures and the golden render |
 | [hack/lab/](hack/lab/) | the local kind lab |

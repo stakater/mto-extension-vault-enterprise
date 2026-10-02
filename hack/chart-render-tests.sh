@@ -106,6 +106,9 @@
 #                     VCO's finalizer update sends "" and its CRD enum refuses it:
 #                     the CR gets no finalizer, and deleting it never deletes the
 #                     mount in Vault.
+#  39. fullnames    — kubectl commands in the docs, the Makefile and the scripts
+#                     name TemplateInstances and Templates by their full resource
+#                     name. On OpenShift the short names are OpenShift's own kinds.
 #
 # The parent gotemplate is rendered through helm's tpl — an approximation of
 # t-op-v2's text/template+Sprig engine that is exact for the constructs it uses.
@@ -1020,5 +1023,29 @@ for c in "tenant:$WORK/all.raw:2" "parent:$WORK/emit-enabled.yaml:3"; do
   [ -z "$lvbad" ] || { lv_ok=1; lv_detail="$lv_detail [$name: mounts without a valid listingVisibility: $(tr '\n' ' ' <<<"$lvbad")]"; }
 done
 check listingvis "$lv_ok" "$lv_detail"
+
+# 39. fullnames — a kubectl command in the docs, the Makefile or a script
+# names template-operator's kinds with their API group. On OpenShift the short
+# names templateinstance and template are OpenShift's own template.openshift.io
+# kinds: a delete then fails with NotFound, or with --ignore-not-found does
+# nothing, and the parent TemplateInstance stays.
+fn_ok=0; fn_detail=""
+fn_files="$(cd "$REPO_ROOT" && git ls-files --cached --others --exclude-standard -- '*.md' 'Makefile' '*.sh')"
+fn_seen=0
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  [ "$f" = hack/chart-render-tests.sh ] && continue
+  fn_seen=$((fn_seen + 1))
+  # grep: 0 = a short name, 1 = none, anything else is an error.
+  rc=0
+  hits="$(grep -n -E '(kubectl|[^a-z]oc |\$\((KC|KUBECTL)\)|kc ).* (get|delete|wait|describe|edit|patch|label|annotate)([ ,].*)?[ ,](templateinstances?|templates?)([ ,]|$)' "$REPO_ROOT/$f")" || rc=$?
+  case "$rc" in
+    0) fn_ok=1; fn_detail="$fn_detail [$f: $(tr '\n' ' ' <<<"$hits" | cut -c1-200)]" ;;
+    1) ;;
+    *) fn_ok=1; fn_detail="$fn_detail [cannot read $f]" ;;
+  esac
+done <<<"$fn_files"
+[ "$fn_seen" -gt 0 ] || { fn_ok=1; fn_detail="$fn_detail [no Markdown, Makefile or script found — the check proves nothing]"; }
+check fullnames "$fn_ok" "$fn_detail"
 
 exit "$fail"

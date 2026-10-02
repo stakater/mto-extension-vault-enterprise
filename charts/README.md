@@ -336,10 +336,12 @@ shared namespace when a name must not be reused with its data.
 ## Uninstall
 
 Order matters. Delete the parent TemplateInstance first, wait until every VCO
-CR is gone, and only then uninstall the release:
+CR is gone, and only then uninstall the release. Use the full resource name:
+on OpenShift the short name means OpenShift's own `template.openshift.io`
+TemplateInstance, so the delete fails with NotFound and the parent stays.
 
 ```bash
-kubectl -n vault-config delete templateinstance mto-extension-vault-enterprise-parent --wait
+kubectl -n vault-config delete templateinstances.templates.v2.stakater.com mto-extension-vault-enterprise-parent --wait
 kubectl -n vault-config get namespaces.redhatcop.redhat.io,policies.redhatcop.redhat.io   # wait for "No resources"
 helm uninstall mto-extension-vault-enterprise-bootstrap -n vault-config
 ```

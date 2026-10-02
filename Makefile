@@ -281,7 +281,7 @@ e2e-kind: ## Build the lab and run the suite. Needs VAULT_LICENSE_FILE. Dumps ./
 .PHONY: e2e-diagnostics
 e2e-diagnostics: ## Dump cluster state and controller logs into ./e2e-logs.
 	@mkdir -p e2e-logs
-	-$(KC) get templateinstances,templates -A -o wide > e2e-logs/templates.txt 2>&1
+	-$(KC) get templateinstances.templates.v2.stakater.com,templates.templates.v2.stakater.com -A -o wide > e2e-logs/templates.txt 2>&1
 	-$(KC) -n $(CONFIG_NS) get $(LAB_VCO_KINDS) -o yaml > e2e-logs/vco-crs.yaml 2>&1
 	-$(KC) get externalsecrets,secretstores -A -o yaml > e2e-logs/eso.yaml 2>&1
 	-$(KC) get pods -A -o wide > e2e-logs/pods.txt 2>&1
@@ -571,7 +571,9 @@ lab-bootstrap: helm ## Install the bootstrap chart from this checkout, pulling t
 
 .PHONY: lab-uninstall
 lab-uninstall: helm ## Uninstall the bootstrap chart in the documented order (charts/README.md → Uninstall).
-	$(KC) -n $(CONFIG_NS) delete templateinstance mto-extension-vault-enterprise-parent --ignore-not-found --wait --timeout=5m
+	@# The full name: on OpenShift the short name is OpenShift's own kind, and
+	@# --ignore-not-found would then hide that nothing was deleted.
+	$(KC) -n $(CONFIG_NS) delete templateinstances.templates.v2.stakater.com mto-extension-vault-enterprise-parent --ignore-not-found --wait --timeout=5m
 	@# The RBAC and the VCO login ServiceAccount must outlive every CR they
 	@# tear down, so the release goes only once no VCO CR is left.
 	@# kubectl's status is checked before counting: piped into wc, a failed
