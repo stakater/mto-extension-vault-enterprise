@@ -72,6 +72,11 @@ func runUISteps(t *testing.T) {
 			t.Fatalf("%s could not write its secret %s: %v", docsApp, leaf, err)
 		}
 	}
+	// What its namespace shares with the tenant's other namespaces: an editor
+	// app writes the namespace's _shared/ area.
+	if err := kvPut(t, appToken, docsTenant, sharedPath(docsNS, "db-endpoint"), "host=db.acme-shop.internal", "port=5432"); err != nil {
+		t.Fatalf("%s could not write its namespace's _shared/: %v", docsApp, err)
+	}
 
 	// Each user logs in through Keycloak and Dex over HTTP (sso.go), and the
 	// flows log in to the UI with the Vault token that gives: the same

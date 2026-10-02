@@ -1,0 +1,32 @@
+# alice (acme-editors) sees the tenant's KV layout: one prefix per namespace
+# for its apps, and the _shared/ area, where each namespace publishes what the
+# tenant's other namespaces may subscribe to (kv-subscribe-ns).
+name: vault-kv-shared
+
+requires:
+  env: [VAULT_URL, TENANT, ENV_PATH, SHARED_PATH, ALICE_TOKEN]
+
+viewport: { width: 1440, height: 900, deviceScaleFactor: 2, colorScheme: light }
+
+steps:
+  # Token login: the Vault UI production build strips data-test-* attributes
+  # from the login form (ember-test-selectors), so these are name and type.
+  - { step: open, url: "${VAULT_URL}/ui/vault/auth?namespace=${TENANT}&with=token" }
+  - { step: fill, selector: 'input[name="token"]', value: "${ALICE_TOKEN}" }
+  - { step: click, selector: 'button[type="submit"]' }
+  - { step: wait-for-url, url: "/ui/vault/dashboard" }
+
+  # The layout: a folder per namespace, and _shared/. A folder's list key
+  # ends with a slash.
+  - { step: open, url: "${VAULT_URL}/ui/vault/secrets-engines/kv/kv/list/${ENV_PATH}/?namespace=${TENANT}" }
+  - { step: wait-for, selector: '[data-test-list-item="acme-shop/"]' }
+  - { step: wait-for, selector: '[data-test-list-item="_shared/"]' }
+  - { step: screenshot, path: vault-kv-layout.png, fullPage: false }
+
+  # What acme-shop publishes, written by its editor app checkout.
+  - { step: open, url: "${VAULT_URL}/ui/vault/secrets-engines/kv/kv/list/${SHARED_PATH}/?namespace=${TENANT}" }
+  - { step: wait-for, selector: '[data-test-list-item="db-endpoint"]' }
+  - { step: screenshot, path: vault-kv-shared.png, fullPage: false }
+
+after:
+  - { step: screenshot, when: on-failure }

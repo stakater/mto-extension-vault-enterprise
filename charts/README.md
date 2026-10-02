@@ -186,6 +186,16 @@ kv/data/<env>/_shared/from-<namespace>/...    written by that namespace's editor
                                               read by every app there and by subscribers
 ```
 
+In the Vault UI, for tenant `acme` with namespace `acme-shop`: one folder per
+namespace, and `_shared/`.
+
+![The kv list of dev/: the folders acme-shop/ and _shared/](../docs/screenshots/captured/vault-kv-layout.png)
+
+What `acme-shop` shares with the tenant's other namespaces, written by its
+editor app `checkout`:
+
+![The kv list of dev/_shared/from-acme-shop/, with the secret db-endpoint](../docs/screenshots/captured/vault-kv-shared.png)
+
 For each annotated ServiceAccount the chart renders a `Policy` and a
 `KubernetesAuthEngineRole` named `kv.<tenant>.<namespace>.<sa>`, and a ConfigMap
 `vault-config-<sa>` in the workload namespace:
