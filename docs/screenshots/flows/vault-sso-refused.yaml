@@ -1,0 +1,28 @@
+# bob is in acme-viewers. He signs in with the editor role, and Vault refuses
+# him after the Keycloak login: his group claim does not match the role's
+# bound group. alice's login with the same role (vault-sso-login) is the
+# matching allow. Needs browser-runner's popup support.
+name: vault-sso-refused
+
+requires:
+  env: [VAULT_URL, TENANT, SSO_MOUNT, SSO_ROLE, BOB_USER, BOB_PASSWORD]
+
+viewport: { width: 1440, height: 900, deviceScaleFactor: 2, colorScheme: light }
+
+steps:
+  - { step: open, url: "${VAULT_URL}/ui/vault/auth?namespace=${TENANT}&with=oidc&role=${SSO_ROLE}" }
+  - { step: click, selector: 'button:has-text("Advanced settings")' }
+  - { step: fill, selector: 'input[name="path"]', value: "${SSO_MOUNT}" }
+  - { step: click, selector: 'button[type="submit"]', opensPopup: sso, timeout: 30s }
+  - { step: wait-for, page: sso, selector: "#username", timeout: 30s }
+  - { step: fill, page: sso, selector: "#username", value: "${BOB_USER}" }
+  - { step: fill, page: sso, selector: "#password", value: "${BOB_PASSWORD}" }
+  - { step: click, page: sso, selector: "#kc-login" }
+
+  # Main window: Vault's refusal, the same message the API tests check.
+  - { step: wait-for, selector: 'form:has-text("does not match any associated bound claim values")', timeout: 30s }
+  - { step: screenshot, path: vault-sso-refused.png, fullPage: false }
+
+after:
+  - { step: screenshot, when: on-failure }
+  - { step: screenshot, page: sso, when: on-failure }

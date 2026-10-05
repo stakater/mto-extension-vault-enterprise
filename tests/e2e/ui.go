@@ -91,6 +91,10 @@ func runUISteps(t *testing.T) {
 		}
 		secrets[strings.ToUpper(user)+"_TOKEN"] = token
 	}
+	// The SSO login flows sign in through the UI itself: alice with her
+	// group's role, and bob with a role his group does not give.
+	secrets["ALICE_PASSWORD"] = testUserPassword(t, "alice")
+	secrets["BOB_PASSWORD"] = testUserPassword(t, "bob")
 	runUIFlows(t, secrets)
 }
 

@@ -84,6 +84,9 @@
 //     appears, and the flow fails (ui step)
 //   - the audit-read UI flow run with the viewer's token: the secret reads,
 //     and the flow fails (ui step)
+//   - the SSO login flow run as bob (viewers) with the editor role: Vault
+//     refuses him, and the flow fails; the refused flow run as alice: her
+//     login works, and the flow fails (ui step)
 //
 // Not mutated yet: the logins that change one binding, the subscriber's
 // metadata update, the tier change, the revocation of an issued token, the
@@ -201,7 +204,7 @@ func TestMain(m *testing.M) {
 	keycloakNS = envOr("E2E_KEYCLOAK_NAMESPACE", "keycloak")
 	dexIssuer = envOr("E2E_DEX_ISSUER", "http://dex.dex.svc.cluster.local:5556")
 	keycloakURL = envOr("E2E_KEYCLOAK_URL", "http://keycloak.keycloak.svc.cluster.local:8080")
-	runnerImage = envOr("E2E_RUNNER_IMAGE", "ghcr.io/stakater/browser-runner:v0.3.0")
+	runnerImage = envOr("E2E_RUNNER_IMAGE", "ghcr.io/stakater/browser-runner:v0.4.0")
 	var err error
 	if waitTimeout, err = time.ParseDuration(envOr("E2E_WAIT_TIMEOUT", "4m")); err != nil {
 		println("E2E_WAIT_TIMEOUT:", err.Error())
@@ -272,6 +275,9 @@ func helmInstall(t *testing.T) {
 		// by copyOIDCClientSecret before this install.
 		"--set", "parent.sso.enabled=true",
 		"--set", "parent.sso.issuerUrl=" + dexIssuer,
+		// The CLI's callback (sso.go), and the Vault UI's (the ui step's SSO flow).
+		"--set", "parent.sso.allowedRedirectUris[0]=http://localhost:8250/oidc/callback",
+		"--set", "parent.sso.allowedRedirectUris[1]=" + vaultServer + "/ui/vault/auth/oidc/sso/oidc/callback",
 	}
 	if tov2SA != "" {
 		parts := strings.Split(strings.TrimPrefix(tov2SA, "system:serviceaccount:"), ":")

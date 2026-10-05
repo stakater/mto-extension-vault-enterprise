@@ -26,9 +26,11 @@ in the kind lab, in CI and locally:
 4. It copies the screenshots to `e2e-logs/screenshots/`, and fails if a flow
    failed.
 
-The flows log in with a Vault token, not with "Sign in with OIDC Provider":
-the Vault UI opens its OIDC login in a popup window, which browser-runner
-cannot drive yet. The token has exactly the policies of that SSO login.
+Two flows sign in as users do, with "Sign in with OIDC Provider": the Vault
+UI opens Dex and Keycloak in a popup window, which needs browser-runner's
+popup support (`click` with `opensPopup`, steps with `page:`). The other flows
+sign in with each user's Vault token, which has exactly the policies of that
+SSO login and is faster.
 
 ## Updating the images
 

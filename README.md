@@ -49,7 +49,7 @@ uninstall.
 | tiers | admin can destroy versions, an editor cannot; audit-read can list but not read |
 | sso | Keycloak users log in through Dex; a group gives exactly its tier, in its own tenant only (see below) |
 | sso tiers | audit-read lists and reads no data; the editor cannot destroy a version, the admin can |
-| ui | browser-runner flows in the Vault UI, as the SSO users of the docs tenant `acme`: the editor sees the app's secrets and "Create new version", the viewer the keys without it, audit-read the names and "You do not have permission"; the images are the docs' ([docs/screenshots/](docs/screenshots/)) |
+| ui | browser-runner flows in the Vault UI, as the SSO users of the docs tenant `acme`: alice signs in through the real OIDC popup (Dex, Keycloak), and bob is refused the editor role; the editor sees the app's secrets and "Create new version", the viewer the keys without it, audit-read the names and "You do not have permission"; the KV layout and the namespace's `_shared/` area. The images are the docs' ([docs/screenshots/](docs/screenshots/)) |
 | configmap | `vault-config-<sa>` has the right values, and logging in and reading with exactly those values works; `vault-apps` indexes the app |
 | template-operator | a deleted `vault-config-<sa>` comes back with the same values (`sync.mode=revert`) |
 | eso | a Deployment's `kv-secret.<name>` becomes a Kubernetes Secret, and the pod sees it |
@@ -141,7 +141,7 @@ make lab-down
 | VCO v1.0.3 (`VCO_VERSION`) | from its release chart; `make lab-vco-src` builds `VCO_SRC` instead, to test an unreleased change |
 | Keycloak 26.4.0 | SSO users and groups: realm `mto`, client `dex` |
 | DCO 0.0.7 and Dex 2.45.1 | SSO: Dex, configured by the Dex Config Operator, in front of Keycloak |
-| browser-runner v0.3.0 (`RUNNER_IMAGE`) | the ui step's flows. The published image is amd64 only: on an arm64 machine, `make lab-runner-image RUNNER_SRC=<checkout>` builds it |
+| browser-runner v0.4.0 (`RUNNER_IMAGE`) | the ui step's flows; v0.4.0 is the first release with popup windows, which the SSO flows need. The published image is amd64 only: on an arm64 machine, `make lab-runner-image RUNNER_SRC=<checkout>` builds it |
 
 `lab-up` also serves this checkout's tenant chart from an in-cluster HTTP repo
 (`lab-chart-repo`) and installs the bootstrap chart from this checkout

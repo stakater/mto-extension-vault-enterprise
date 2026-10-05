@@ -244,6 +244,29 @@ when Keycloak sits behind Dex. Log in with:
 VAULT_NAMESPACE=<tenant> vault login -method=oidc -path=oidc/sso role=sso.<tenant>.editor
 ```
 
+### Signing in to the Vault UI
+
+Choose the tenant's namespace, the method OIDC and a role, and set the mount
+path `oidc/sso` under "Advanced settings":
+
+![The Vault sign-in form for namespace acme: method OIDC, role sso.acme.editor, mount path oidc/sso](../docs/screenshots/captured/vault-sso-login.png)
+
+"Sign in with OIDC Provider" opens the identity provider in a popup window —
+here Keycloak, behind Dex:
+
+![The Keycloak sign-in page of realm MTO, in the popup window](../docs/screenshots/captured/keycloak-login.png)
+
+After the Keycloak login, the popup closes and the UI is signed in. The user
+menu names the login: namespace `acme`, mount `oidc/sso`, user
+`alice@example.com`:
+
+![The Vault dashboard for namespace acme, with the user menu open: Acme-auth-oidc-sso-alice@example.com](../docs/screenshots/captured/vault-sso-signed-in.png)
+
+A role works only for its group. bob is in `acme-viewers`, so Vault refuses
+his login with the editor role:
+
+![Vault refuses the login: claim "groups" does not match any associated bound claim values](../docs/screenshots/captured/vault-sso-refused.png)
+
 ### What each tier sees in the Vault UI
 
 Tenant `acme`, app `checkout` in namespace `acme-shop`. Each user's Keycloak

@@ -51,6 +51,9 @@ spec:
   redirectURIs:
     # The vault CLI's loopback listener, and the callback the e2e suite stops at.
     - http://localhost:8250/oidc/callback
+    # The Vault UI's callback, at the in-cluster address the UI flows use
+    # (docs/screenshots). Vault sends it without the ?namespace= query.
+    - http://vault.vault.svc:8200/ui/vault/auth/oidc/sso/oidc/callback
   secretRef:
     name: dex-vault-client
     key: client-secret

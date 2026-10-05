@@ -453,6 +453,10 @@ lab-dex: helm ## Install DCO and Dex, connected to the lab Keycloak through Keyc
 	$(HELM) upgrade --install dex dex/dex --version $(DEX_CHART_VERSION) \
 		--kube-context $(CONTEXT) -n $(DEX_NS) \
 		--set configSecret.create=false --set configSecret.name=dex-config --wait --timeout 5m
+	@# Dex reads its config only at start, and DCO rewrites Secret dex-config on
+	@# every change: Reloader (lab-reloader) restarts Dex when it does. The chart
+	@# can annotate only the pods, and Reloader reads the Deployment.
+	$(KC) -n $(DEX_NS) annotate deploy/dex secret.reloader.stakater.com/reload=dex-config --overwrite
 	@# Vault fetches the issuer's discovery document from inside its pod: prove it works there.
 	@doc=$$($(KC) -n $(VAULT_NS) exec vault-0 -- wget -qO- $(DEX_ISSUER)/.well-known/openid-configuration) \
 		|| { echo "error: the Vault pod cannot reach Dex at $(DEX_ISSUER)" >&2; exit 1; }; \
@@ -532,7 +536,7 @@ CHART_REPO_URL ?= http://chart-repo.chart-repo.svc.cluster.local
 # browser-runner, for the e2e suite's UI flows (docs/screenshots/). CI pulls the
 # published image (amd64 only). On an arm64 machine, build it from a checkout of
 # stakater-ab/browser-runner at this tag: make lab-runner-image RUNNER_SRC=<dir>.
-RUNNER_IMAGE ?= ghcr.io/stakater/browser-runner:v0.3.0
+RUNNER_IMAGE ?= ghcr.io/stakater/browser-runner:v0.4.0
 RUNNER_SRC   ?=
 
 .PHONY: lab-runner-image
@@ -563,7 +567,9 @@ lab-bootstrap: helm ## Install the bootstrap chart from this checkout, pulling t
 		--set tenantChart.registry=$(CHART_REPO_URL) \
 		--set parent.vaultServer=http://vault.$(VAULT_NS).svc:8200 \
 		--set parent.eso=enabled \
-		--set parent.sso.enabled=true --set parent.sso.issuerUrl=$(DEX_ISSUER)
+		--set parent.sso.enabled=true --set parent.sso.issuerUrl=$(DEX_ISSUER) \
+		--set 'parent.sso.allowedRedirectUris[0]=http://localhost:8250/oidc/callback' \
+		--set 'parent.sso.allowedRedirectUris[1]=http://vault.$(VAULT_NS).svc:8200/ui/vault/auth/oidc/sso/oidc/callback'
 	@# Vault's side of the Dex "vault" client: the same secret, in CONFIG_NS.
 	@$(KC) -n $(DEX_NS) get secret dex-vault-client -o json \
 		| jq '{apiVersion: "v1", kind: "Secret", type: "Opaque", metadata: {name: "vault-oidc-client-secret", namespace: "$(CONFIG_NS)"}, data: {"client-secret": .data["client-secret"]}}' \
