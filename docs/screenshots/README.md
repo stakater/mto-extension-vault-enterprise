@@ -19,7 +19,10 @@ in the kind lab, in CI and locally:
 1. It creates the docs tenant `acme` (namespace `acme-shop`, app `checkout`)
    and writes the app's secrets, with example values only.
 2. It logs alice (editor), bob (viewer) and dave (audit-read) in through
-   Keycloak and Dex, and passes their Vault tokens to the flows.
+   Keycloak and Dex, and passes each one's Vault token, user name and Keycloak
+   password to the flows, in Secret `e2e-ui/ui-flow-secrets`. The step deletes
+   that namespace afterwards; only a failed run with `E2E_KEEP_ON_FAILURE`
+   keeps it.
 3. It runs every flow in one Pod in the cluster, where the in-cluster names of
    Vault, Dex and Keycloak resolve: one init container per flow, in
    browser-runner's probe mode, so every flow runs and reports.

@@ -246,8 +246,21 @@ VAULT_NAMESPACE=<tenant> vault login -method=oidc -path=oidc/sso role=sso.<tenan
 
 ### Signing in to the Vault UI
 
-Choose the tenant's namespace, the method OIDC and a role, and set the mount
-path `oidc/sso` under "Advanced settings":
+The UI's login needs its callback, `<vault address>/ui/vault/auth/oidc/sso/oidc/callback`,
+in two places: `parent.sso.allowedRedirectUris` (every SSO role) and the
+redirect URIs of the IdP client (with Dex: the DCO `Client`). Vault drops the
+`?namespace=` query before it sends the URI on, so allow it without one. The
+default list holds only the CLI's `http://localhost:8250/oidc/callback`, so set
+both:
+
+```bash
+--set 'parent.sso.allowedRedirectUris[0]=http://localhost:8250/oidc/callback' \
+--set 'parent.sso.allowedRedirectUris[1]=https://vault.example.com/ui/vault/auth/oidc/sso/oidc/callback'
+```
+
+Without it, Vault returns no login URL and "Sign in with OIDC Provider" fails.
+In the UI, choose the tenant's namespace, the method OIDC and a role, and set
+the mount path `oidc/sso` under "Advanced settings":
 
 ![The Vault sign-in form for namespace acme: method OIDC, role sso.acme.editor, mount path oidc/sso](../docs/screenshots/captured/vault-sso-login.png)
 

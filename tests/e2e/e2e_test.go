@@ -275,9 +275,10 @@ func helmInstall(t *testing.T) {
 		// by copyOIDCClientSecret before this install.
 		"--set", "parent.sso.enabled=true",
 		"--set", "parent.sso.issuerUrl=" + dexIssuer,
-		// The CLI's callback (sso.go), and the Vault UI's (the ui step's SSO flow).
-		"--set", "parent.sso.allowedRedirectUris[0]=http://localhost:8250/oidc/callback",
-		"--set", "parent.sso.allowedRedirectUris[1]=" + vaultServer + "/ui/vault/auth/oidc/sso/oidc/callback",
+		// The CLI's callback (sso.go) and the Vault UI's (the ui step's SSO
+		// flows). The preflight checks that Dex's client allows the same two.
+		"--set", "parent.sso.allowedRedirectUris[0]=" + cliCallback,
+		"--set", "parent.sso.allowedRedirectUris[1]=" + uiCallback(t),
 	}
 	if tov2SA != "" {
 		parts := strings.Split(strings.TrimPrefix(tov2SA, "system:serviceaccount:"), ":")

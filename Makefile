@@ -46,7 +46,9 @@ TOV2_DEPLOYMENT    ?= template-operator-v2-controller-manager
 ESO_CHART_VERSION      ?= 2.11.0
 RELOADER_CHART_VERSION ?= 2.2.17
 
-VAULT_NS            ?= vault
+# Fixed, not ?=: hack/lab/dex-config.yaml and docs/screenshots/config.env name
+# the Vault UI's in-cluster address vault.vault.svc too.
+VAULT_NS            := vault
 VAULT_CHART_VERSION ?= 0.34.1
 VAULT_VERSION       ?= 2.1.1
 # ent needs VAULT_LICENSE_FILE. ce runs without one, but has no namespaces, so
@@ -453,10 +455,6 @@ lab-dex: helm ## Install DCO and Dex, connected to the lab Keycloak through Keyc
 	$(HELM) upgrade --install dex dex/dex --version $(DEX_CHART_VERSION) \
 		--kube-context $(CONTEXT) -n $(DEX_NS) \
 		--set configSecret.create=false --set configSecret.name=dex-config --wait --timeout 5m
-	@# Dex reads its config only at start, and DCO rewrites Secret dex-config on
-	@# every change: Reloader (lab-reloader) restarts Dex when it does. The chart
-	@# can annotate only the pods, and Reloader reads the Deployment.
-	$(KC) -n $(DEX_NS) annotate deploy/dex secret.reloader.stakater.com/reload=dex-config --overwrite
 	@# Vault fetches the issuer's discovery document from inside its pod: prove it works there.
 	@doc=$$($(KC) -n $(VAULT_NS) exec vault-0 -- wget -qO- $(DEX_ISSUER)/.well-known/openid-configuration) \
 		|| { echo "error: the Vault pod cannot reach Dex at $(DEX_ISSUER)" >&2; exit 1; }; \

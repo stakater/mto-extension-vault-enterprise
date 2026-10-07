@@ -21,6 +21,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // Human SSO, as in production: person -> Vault (oidc/sso) -> Dex -> Keycloak.
@@ -34,9 +36,10 @@ import (
 
 const (
 	ssoMount = "oidc/sso"
-	// The vault CLI's loopback callback: an allowed redirect URI of every SSO
-	// role (the tenant chart's default) and of Dex's "vault" client. Nothing
-	// listens there; the client stops at the redirect and reads code and state.
+	// The vault CLI's loopback callback: the tenant chart's default redirect
+	// URI, which the e2e install allows explicitly next to the Vault UI's
+	// (helmInstall), and one of Dex's "vault" client. Nothing listens there;
+	// the client stops at the redirect and reads code and state.
 	cliCallback     = "http://localhost:8250/oidc/callback"
 	cliCallbackHost = "localhost:8250"
 	// The phrase Vault's JWT/OIDC plugin refuses a login with when the token's
@@ -283,6 +286,26 @@ func copyOIDCClientSecret(t *testing.T) {
 
 // dexIssuerFromVault fetches Dex's discovery document from inside the Vault
 // pod — where Vault itself fetches it — and returns the issuer it names.
+// dexClient is the Dex client Vault logs in through (hack/lab/dex-config.yaml),
+// also the chart's default sso.oidc.clientId.
+const dexClient = "vault"
+
+// dexClientRedirects returns the redirect URIs Dex's client allows, from its
+// Dex Config Operator Client resource.
+func dexClientRedirects(t *testing.T) []string {
+	t.Helper()
+	gvr := schema.GroupVersionResource{Group: "auth.stakater.com", Version: "v1alpha1", Resource: "clients"}
+	o := get(t, gvr, dexNS, dexClient)
+	if o == nil {
+		t.Fatalf("Dex client %s/%s does not exist (make lab-dex)", dexNS, dexClient)
+	}
+	uris, _, err := unstructured.NestedStringSlice(o.Object, "spec", "redirectURIs")
+	if err != nil {
+		t.Fatalf("read the redirect URIs of Dex client %s/%s: %v", dexNS, dexClient, err)
+	}
+	return uris
+}
+
 func dexIssuerFromVault(t *testing.T) string {
 	t.Helper()
 	cctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)

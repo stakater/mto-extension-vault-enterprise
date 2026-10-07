@@ -78,24 +78,36 @@ func runUISteps(t *testing.T) {
 		t.Fatalf("%s could not write its namespace's _shared/: %v", docsApp, err)
 	}
 
-	// Each user logs in through Keycloak and Dex over HTTP (sso.go), and the
-	// flows log in to the UI with the Vault token that gives: the same
-	// policies as the UI's own SSO login, which opens a popup that
-	// browser-runner cannot drive yet.
+	// Each user logs in through Keycloak and Dex over HTTP (sso.go). Most
+	// flows sign in to the UI with the Vault token that gives, which has the
+	// same policies as the UI's own SSO login; the vault-sso-* flows sign in
+	// through the UI's OIDC popup with the user name and password.
 	c := newSSOClient(t)
 	secrets := map[string]string{}
 	for user, tier := range docsUsers {
-		token, pols, err := oidcLogin(t, c, docsTenant, ssoRole(docsTenant, tier), user, testUserPassword(t, user))
+		password := testUserPassword(t, user)
+		token, pols, err := oidcLogin(t, c, docsTenant, ssoRole(docsTenant, tier), user, password)
 		if err != nil || !slices.Contains(pols, ssoRole(docsTenant, tier)) {
 			t.Fatalf("%s could not log in to %s as %s: policies %v, err %v", user, docsTenant, tier, pols, err)
 		}
-		secrets[strings.ToUpper(user)+"_TOKEN"] = token
+		key := strings.ToUpper(user)
+		secrets[key+"_TOKEN"] = token
+		secrets[key+"_USER"] = user
+		secrets[key+"_PASSWORD"] = password
 	}
-	// The SSO login flows sign in through the UI itself: alice with her
-	// group's role, and bob with a role his group does not give.
-	secrets["ALICE_PASSWORD"] = testUserPassword(t, "alice")
-	secrets["BOB_PASSWORD"] = testUserPassword(t, "bob")
 	runUIFlows(t, secrets)
+}
+
+// uiCallback is the Vault UI's OIDC callback at the address the flows open
+// (VAULT_URL). Vault drops the ?namespace= query before it sends the URI on, so
+// this is the whole URI that every SSO role and the IdP client must allow.
+func uiCallback(t *testing.T) string {
+	t.Helper()
+	base := strings.TrimSuffix(readEnvFile(t, uiConfigEnv)["VAULT_URL"], "/")
+	if base == "" {
+		t.Fatalf("%s sets no VAULT_URL", uiConfigEnv)
+	}
+	return base + "/ui/vault/auth/" + ssoMount + "/oidc/callback"
 }
 
 // runUIFlows runs every flow in one Pod. Each flow is an init container in

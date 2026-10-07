@@ -5,12 +5,12 @@
 name: vault-sso-refused
 
 requires:
-  env: [VAULT_URL, TENANT, SSO_MOUNT, SSO_ROLE, BOB_USER, BOB_PASSWORD]
+  env: [VAULT_URL, TENANT, SSO_MOUNT, BOB_USER, BOB_PASSWORD]
 
 viewport: { width: 1440, height: 900, deviceScaleFactor: 2, colorScheme: light }
 
 steps:
-  - { step: open, url: "${VAULT_URL}/ui/vault/auth?namespace=${TENANT}&with=oidc&role=${SSO_ROLE}" }
+  - { step: open, url: "${VAULT_URL}/ui/vault/auth?namespace=${TENANT}&with=oidc&role=sso.${TENANT}.editor" }
   - { step: click, selector: 'button:has-text("Advanced settings")' }
   - { step: fill, selector: 'input[name="path"]', value: "${SSO_MOUNT}" }
   - { step: click, selector: 'button[type="submit"]', opensPopup: sso, timeout: 30s }

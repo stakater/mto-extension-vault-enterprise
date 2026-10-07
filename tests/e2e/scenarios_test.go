@@ -132,6 +132,14 @@ func TestE2E(t *testing.T) {
 		if got := dexIssuerFromVault(t); got != dexIssuer {
 			t.Fatalf("Dex names its issuer %q, want %q: tokens would not validate", got, dexIssuer)
 		}
+		// The SSO roles allow these two callbacks (helmInstall). Dex must too,
+		// or it refuses the login with "Unregistered redirect_uri".
+		dexRedirects := dexClientRedirects(t)
+		for _, want := range []string{cliCallback, uiCallback(t)} {
+			if !slices.Contains(dexRedirects, want) {
+				t.Fatalf("Dex client %s/%s does not allow the redirect URI %s (it allows %v)", dexNS, dexClient, want, dexRedirects)
+			}
+		}
 		for _, u := range []string{"alice", "bob", "carol", "dave", "erin"} {
 			testUserPassword(t, u)
 		}

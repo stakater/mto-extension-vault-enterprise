@@ -4,14 +4,14 @@
 name: vault-sso-login
 
 requires:
-  env: [VAULT_URL, TENANT, SSO_MOUNT, SSO_ROLE, ALICE_USER, ALICE_PASSWORD]
+  env: [VAULT_URL, TENANT, SSO_MOUNT, ALICE_USER, ALICE_PASSWORD]
 
 viewport: { width: 1440, height: 900, deviceScaleFactor: 2, colorScheme: light }
 
 steps:
   # with=oidc and role= fill the form; the mount path does not come from the
   # URL, so it is typed under "Advanced settings".
-  - { step: open, url: "${VAULT_URL}/ui/vault/auth?namespace=${TENANT}&with=oidc&role=${SSO_ROLE}" }
+  - { step: open, url: "${VAULT_URL}/ui/vault/auth?namespace=${TENANT}&with=oidc&role=sso.${TENANT}.editor" }
   - { step: click, selector: 'button:has-text("Advanced settings")' }
   - { step: fill, selector: 'input[name="path"]', value: "${SSO_MOUNT}" }
   - { step: screenshot, path: vault-sso-login.png, fullPage: false }
