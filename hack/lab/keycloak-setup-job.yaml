@@ -2,8 +2,8 @@
 #
 #   client "dex"   confidential; the client Dex's upstream connector logs in with
 #   groups claim   plain names (full.path=false), in the ID token
-#   groups         <tenant>-<tier>s for every tenant in TENANTS, the chart's
-#                  default sso.tenantGroupTemplate "{tenant}-{tier}s"
+#   groups         <tenant>-<role>s for every tenant in TENANTS, the chart's
+#                  default sso.tenantGroupTemplate "{tenant}-{role}s"
 #   users          alice  e2e-alpha-editors
 #                  bob    e2e-alpha-viewers
 #                  carol  e2e-beta-admins
@@ -52,8 +52,8 @@ data:
     fi
 
     for t in $TENANTS; do
-      for tier in admin editor viewer audit-read; do
-        g="$t-${tier}s"
+      for role in admin editor viewer audit-read; do
+        g="$t-${role}s"
         id=$($K get groups -r mto -q search="$g" -q exact=true --fields id --format csv --noquotes)
         [ -n "$id" ] || $K create groups -r mto -s name="$g"
       done

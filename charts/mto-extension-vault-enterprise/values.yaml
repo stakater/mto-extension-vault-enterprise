@@ -79,7 +79,7 @@ tenantLabelKey: stakater.com/tenant
 sharedTenant:
   name: shared
 
-# ─── Tier capabilities (KV) ──────────────────────────────────────────
+# ─── Role capabilities (KV) ──────────────────────────────────────────
 # audit-read   list-only on metadata, no data reads — for compliance probes
 # viewer       read + list
 # editor       create/read/update/patch/list
@@ -87,7 +87,7 @@ sharedTenant:
 #
 # `patch` makes a partial update atomic; without it clients fall back to
 # read-modify-write and lose one of two concurrent updates.
-tierCaps:
+roleCaps:
   audit-read: '["list"]'
   viewer:     '["read", "list"]'
   editor:     '["create", "read", "update", "patch", "list"]'
@@ -141,12 +141,12 @@ sso:
       key: client-secret
     caBundlePem: ""
 
-  # IdP-group pattern. Placeholders {tenant} and {tier}.
-  tenantGroupTemplate: "{tenant}-{tier}s"
+  # IdP-group pattern. Placeholders {tenant} and {role}.
+  tenantGroupTemplate: "{tenant}-{role}s"
 
-  # Per-tier override of the group pattern: tenantRoleMapping.<tier>.pattern.
-  # fallback: a tier name emits sso.<tenant>.fallback with NO group binding —
-  # any valid OIDC token gets that tier. deny (default) emits nothing.
+  # Per-role override of the group pattern: tenantRoleMapping.<role>.pattern.
+  # fallback: a role name emits sso.<tenant>.fallback with NO group binding —
+  # any valid OIDC token gets that role. deny (default) emits nothing.
   tenantRoleMapping:
     admin:       {}
     editor:      {}
@@ -157,8 +157,8 @@ sso:
   allowedRedirectUris:
     - "http://localhost:8250/oidc/callback"
 
-  # Tiers to emit SSO roles for. Each needs a tierCaps entry.
-  tiers:
+  # Roles to emit an SSO Vault role and policy for. Each needs a roleCaps entry.
+  roles:
     - admin
     - editor
     - viewer

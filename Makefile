@@ -406,7 +406,7 @@ endif
 	$(KC) -n $(VAULT_NS) wait --for=condition=Ready pod/vault-0 --timeout=300s
 
 .PHONY: lab-keycloak
-lab-keycloak: ## Install Keycloak: realm mto, client dex, a group per tenant tier, five test users.
+lab-keycloak: ## Install Keycloak: realm mto, client dex, a group per tenant and role, five test users.
 	$(KC) create namespace $(KEYCLOAK_NS) --dry-run=client -o yaml | $(KC) apply -f -
 	@# Random secrets, made only when missing: a re-run must not change a password
 	@# that Keycloak, Dex or a running test already holds. Never printed.

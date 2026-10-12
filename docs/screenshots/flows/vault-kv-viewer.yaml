@@ -1,4 +1,4 @@
-# bob is in the Keycloak group acme-viewers: the viewer tier reads, and
+# bob is in the Keycloak group acme-viewers: the viewer role reads, and
 # cannot write. The editor flow is the matching allow: alice sees the same
 # button on the same page.
 name: vault-kv-viewer

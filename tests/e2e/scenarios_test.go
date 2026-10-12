@@ -186,26 +186,26 @@ func TestE2E(t *testing.T) {
 		createTenant(t, beta, betaNS)
 		createServiceAccount(t, alphaNS, "web", map[string]string{
 			annPrefix + "kv":               "true",
-			annPrefix + "tier":             "editor",
+			annPrefix + "role":             "editor",
 			annPrefix + "kv-export-tenant": beta,
 		})
 		createServiceAccount(t, alphaNS, "viewer", map[string]string{
 			annPrefix + "kv":   "true",
-			annPrefix + "tier": "viewer",
+			annPrefix + "role": "viewer",
 		})
-		for sa, tier := range map[string]string{"admin": "admin", "auditor": "audit-read", "temp": "editor", "lower": "editor"} {
-			createServiceAccount(t, alphaNS, sa, map[string]string{annPrefix + "kv": "true", annPrefix + "tier": tier})
+		for sa, role := range map[string]string{"admin": "admin", "auditor": "audit-read", "temp": "editor", "lower": "editor"} {
+			createServiceAccount(t, alphaNS, sa, map[string]string{annPrefix + "kv": "true", annPrefix + "role": role})
 		}
-		// An editor: a read-only subscription must hold even for a tier that can
+		// An editor: a read-only subscription must hold even for a role that can
 		// write its own prefixes — with viewer the refusals could not fail.
 		createServiceAccount(t, toolsNS, "sub", map[string]string{
 			annPrefix + "kv":              "true",
-			annPrefix + "tier":            "editor",
+			annPrefix + "role":            "editor",
 			annPrefix + "kv-subscribe-ns": alphaNS,
 		})
 		createServiceAccount(t, toolsNS, "nosub", map[string]string{
 			annPrefix + "kv":   "true",
-			annPrefix + "tier": "editor",
+			annPrefix + "role": "editor",
 		})
 		// Named like web, in another namespace, with no annotation: a role binds
 		// a ServiceAccount name AND a namespace, and the login refusals below
@@ -213,7 +213,7 @@ func TestE2E(t *testing.T) {
 		createServiceAccount(t, toolsNS, "web", nil)
 		createServiceAccount(t, betaNS, "reader", map[string]string{
 			annPrefix + "kv":               "true",
-			annPrefix + "tier":             "viewer",
+			annPrefix + "role":             "viewer",
 			annPrefix + "kv-import-tenant": alpha,
 		})
 		copyOIDCClientSecret(t)
@@ -377,7 +377,7 @@ func TestE2E(t *testing.T) {
 		}
 	})
 
-	step("kv: isolation between apps, tiers and tenants", func(t *testing.T) {
+	step("kv: isolation between apps, roles and tenants", func(t *testing.T) {
 		// Seeded as root, so a refusal below is about the caller, not a missing secret.
 		vaultIn(t, alpha, "kv", "put", "-mount=kv", appPath(alphaNS, "viewer", "cfg"), "mode=ro")
 		vaultIn(t, beta, "kv", "put", "-mount=kv", appPath(betaNS, "reader", "cfg"), "mode=beta")
@@ -411,12 +411,12 @@ func TestE2E(t *testing.T) {
 			t.Errorf("viewer could not read its own secret: got %q, err %v", got, err)
 		}
 		if err := kvPut(t, viewerToken, alpha, appPath(alphaNS, "viewer", "cfg"), "mode=rw"); !refused(err) {
-			t.Errorf("viewer tier wrote a secret; err: %v", err)
+			t.Errorf("viewer role wrote a secret; err: %v", err)
 		}
 	})
 
-	step("kv: versions, patch and deletes follow the tier", func(t *testing.T) {
-		// KV v2 keeps every version of a secret. What each tier may do with them:
+	step("kv: versions, patch and deletes follow the role", func(t *testing.T) {
+		// KV v2 keeps every version of a secret. What each role may do with them:
 		//   editor  write, read an old version, patch; no soft delete
 		//   viewer  read; no patch
 		//   admin   soft delete, then undelete
@@ -523,7 +523,7 @@ func TestE2E(t *testing.T) {
 		}
 	})
 
-	step("tiers: admin can destroy versions, audit-read can only list", func(t *testing.T) {
+	step("roles: admin can destroy versions, audit-read can only list", func(t *testing.T) {
 		adminToken, _ := vaultLogin(t, alpha, roleName(alpha, alphaNS, "admin"), saToken(t, alphaNS, "admin"))
 		p := appPath(alphaNS, "admin", "key")
 		if err := kvPut(t, adminToken, alpha, p, "v=1"); err != nil {
@@ -548,21 +548,21 @@ func TestE2E(t *testing.T) {
 		}
 	})
 
-	step("sso: Keycloak users log in through Dex with their group's tier", func(t *testing.T) {
+	step("sso: Keycloak users log in through Dex with their group's role", func(t *testing.T) {
 		// Keycloak holds the users and groups, Dex fronts it through Keycloak's
 		// "dex" client, and each tenant's oidc/sso roles bind one group each
-		// (<tenant>-<tier>s). The test users (make lab-keycloak):
+		// (<tenant>-<role>s). The test users (make lab-keycloak):
 		//   alice e2e-alpha-editors   bob e2e-alpha-viewers   carol e2e-beta-admins
 		for _, tn := range []string{alpha, beta} {
 			waitVCO(t, "jwtoidcauthengineconfigs", tn+"-oidc-config")
-			for _, tier := range []string{"admin", "editor", "viewer"} {
-				waitVCO(t, "jwtoidcauthengineroles", ssoRole(tn, tier))
+			for _, role := range []string{"admin", "editor", "viewer"} {
+				waitVCO(t, "jwtoidcauthengineroles", ssoRole(tn, role))
 			}
 		}
 		c := newSSOClient(t)
 		note := env + "/sso/note"
 
-		// The group gives the tier: alice's editor login writes.
+		// The group gives the role: alice's editor login writes.
 		aliceToken, pols, err := oidcLogin(t, c, alpha, ssoRole(alpha, "editor"), "alice", testUserPassword(t, "alice"))
 		if err != nil || !slices.Contains(pols, ssoRole(alpha, "editor")) {
 			t.Fatalf("alice (e2e-alpha-editors) could not log in as editor: policies %v, err %v", pols, err)
@@ -582,7 +582,7 @@ func TestE2E(t *testing.T) {
 		if err := kvPut(t, bobToken, alpha, note, "by=bob"); !refused(err) {
 			t.Errorf("the SSO viewer wrote a secret; err: %v", err)
 		}
-		// A group gives only its own tier: bob cannot take the editor role.
+		// A group gives only its own role: bob cannot take the editor role.
 		if _, _, err := oidcLogin(t, c, alpha, ssoRole(alpha, "editor"), "bob", testUserPassword(t, "bob")); !claimRefused(err) {
 			t.Errorf("bob (e2e-alpha-viewers) was not refused the editor role for the group; err: %v", err)
 		}
@@ -641,7 +641,7 @@ func TestE2E(t *testing.T) {
 		}
 	})
 
-	step("ui: the Vault UI shows each SSO tier its own view (browser-runner)", func(t *testing.T) {
+	step("ui: the Vault UI shows each SSO role its own view (browser-runner)", func(t *testing.T) {
 		runUISteps(t)
 	})
 
@@ -788,7 +788,7 @@ func TestE2E(t *testing.T) {
 			t.Fatalf("an app in the same namespace could not read _shared/: got %q, err %v", got, err)
 		}
 		if err := kvPut(t, viewerToken, alpha, sharedPath(alphaNS, "common"), "url=tampered"); !refused(err) {
-			t.Errorf("viewer tier wrote to _shared/; err: %v", err)
+			t.Errorf("viewer role wrote to _shared/; err: %v", err)
 		}
 	})
 
@@ -799,9 +799,9 @@ func TestE2E(t *testing.T) {
 		}
 		// A subscription is read-only on the producer's prefix, on the metadata
 		// path too: KV v2 metadata update sets max_versions, which destroys
-		// versions. sub is an editor, and its tier grants that update on its own
+		// versions. sub is an editor, and its role grants that update on its own
 		// prefixes, so the refusal fails if the subscription grant is widened to
-		// the tier's caps. (A metadata DELETE could not fail: no editor has it.)
+		// the role's caps. (A metadata DELETE could not fail: no editor has it.)
 		// The producer's update on the same path shows the call itself works.
 		if err := kvPut(t, subToken, alpha, sharedPath(alphaNS, "common"), "url=tampered"); !refused(err) {
 			t.Errorf("subscriber wrote to the producer's _shared/; err: %v", err)
@@ -812,7 +812,7 @@ func TestE2E(t *testing.T) {
 		if err := kvMetadataPut(t, subToken, alpha, sharedPath(alphaNS, "common"), "-max-versions=1"); !refused(err) {
 			t.Errorf("subscriber updated the producer's secret metadata; err: %v", err)
 		}
-		// Same tenant, no annotation: no grant. An editor tier does not help.
+		// Same tenant, no annotation: no grant. An editor role does not help.
 		nosubToken, _ := vaultLogin(t, alpha, roleName(alpha, toolsNS, "nosub"), saToken(t, toolsNS, "nosub"))
 		if _, err := kvGet(t, nosubToken, alpha, sharedPath(alphaNS, "common"), "url"); !refused(err) {
 			t.Errorf("an unsubscribed app read another namespace's _shared/; err: %v", err)
@@ -853,7 +853,7 @@ func TestE2E(t *testing.T) {
 	step("kv: the app annotation names the prefix, and two ServiceAccounts cannot share it", func(t *testing.T) {
 		// billing-sa declares app "billing": its prefix is billing/, not billing-sa/.
 		createServiceAccount(t, alphaNS, "billing-sa", map[string]string{
-			annPrefix + "kv": "true", annPrefix + "tier": "editor", annPrefix + "app": "billing",
+			annPrefix + "kv": "true", annPrefix + "role": "editor", annPrefix + "app": "billing",
 		})
 		role := roleName(alpha, alphaNS, "billing-sa")
 		waitVCO(t, "policies", role)
@@ -871,7 +871,7 @@ func TestE2E(t *testing.T) {
 		// thief claims app "billing" in the same namespace. Each app owns one
 		// prefix, so the chart refuses BOTH until one gives the name up.
 		createServiceAccount(t, alphaNS, "thief", map[string]string{
-			annPrefix + "kv": "true", annPrefix + "tier": "viewer", annPrefix + "app": "billing",
+			annPrefix + "kv": "true", annPrefix + "role": "viewer", annPrefix + "app": "billing",
 		})
 		for _, sa := range []string{"billing-sa", "thief"} {
 			waitFor(t, "an error ConfigMap for "+sa, func() string {
@@ -910,7 +910,7 @@ func TestE2E(t *testing.T) {
 
 	step("kv: one app name in two namespaces is two apps", func(t *testing.T) {
 		for _, ns := range []string{alphaNS, toolsNS} {
-			createServiceAccount(t, ns, "api", map[string]string{annPrefix + "kv": "true", annPrefix + "tier": "editor"})
+			createServiceAccount(t, ns, "api", map[string]string{annPrefix + "kv": "true", annPrefix + "role": "editor"})
 		}
 		tokens := map[string]string{}
 		for _, ns := range []string{alphaNS, toolsNS} {
@@ -940,9 +940,9 @@ func TestE2E(t *testing.T) {
 			ann map[string]string
 			msg string
 		}{
-			{"g-no-tier", map[string]string{annPrefix + "kv": "true"}, "tier is not set"},
-			{"g-bad-tier", map[string]string{annPrefix + "kv": "true", annPrefix + "tier": "superuser"}, "is not a known tier"},
-			{"g-kv-yes", map[string]string{annPrefix + "kv": "yes", annPrefix + "tier": "viewer"}, `must be "true" or "false"`},
+			{"g-no-role", map[string]string{annPrefix + "kv": "true"}, "role is not set"},
+			{"g-bad-role", map[string]string{annPrefix + "kv": "true", annPrefix + "role": "superuser"}, "is not a known role"},
+			{"g-kv-yes", map[string]string{annPrefix + "kv": "yes", annPrefix + "role": "viewer"}, `must be "true" or "false"`},
 			{"g-typo", map[string]string{annPrefix + "kvv": "true"}, "unknown annotation"},
 			{"g-transit", map[string]string{annPrefix + "transit": "true"}, "is not supported"},
 		}
@@ -953,7 +953,7 @@ func TestE2E(t *testing.T) {
 		// ServiceAccount runs as it. Its annotations are put back afterwards.
 		orig := serviceAccountAnnotations(t, toolsNS, "default")
 		t.Cleanup(func() { setServiceAccountAnnotations(t, toolsNS, "default", orig) })
-		withKV := map[string]string{annPrefix + "kv": "true", annPrefix + "tier": "viewer"}
+		withKV := map[string]string{annPrefix + "kv": "true", annPrefix + "role": "viewer"}
 		for k, v := range orig {
 			withKV[k] = v
 		}
@@ -1012,17 +1012,17 @@ func TestE2E(t *testing.T) {
 		deleteDeployment(t, toolsNS, "g-deploy")
 	})
 
-	step("tier change: lowering editor to viewer takes write away", func(t *testing.T) {
+	step("role change: lowering editor to viewer takes write away", func(t *testing.T) {
 		role := roleName(alpha, alphaNS, "lower")
 		leaf := appPath(alphaNS, "lower", "k")
 		// The write before the change is the matching allow for the refusals
 		// after it: same token, same path.
 		lowerToken, _ := vaultLogin(t, alpha, role, saToken(t, alphaNS, "lower"))
 		if err := kvPut(t, lowerToken, alpha, leaf, "v=1"); err != nil {
-			t.Fatalf("editor could not write its own secret before the tier change: %v", err)
+			t.Fatalf("editor could not write its own secret before the role change: %v", err)
 		}
-		setServiceAccountAnnotations(t, alphaNS, "lower", map[string]string{annPrefix + "kv": "true", annPrefix + "tier": "viewer"})
-		// The tier is not part of the policy name, so VCO rewrites the same
+		setServiceAccountAnnotations(t, alphaNS, "lower", map[string]string{annPrefix + "kv": "true", annPrefix + "role": "viewer"})
+		// The role is not part of the policy name, so VCO rewrites the same
 		// policy in place. Inspected as root: wait for the viewer version.
 		waitFor(t, "Vault holds the viewer policy for lower", func() string {
 			out, err := vaultRun(t, vaultRootToken, alpha, "policy", "read", role)
@@ -1035,16 +1035,16 @@ func TestE2E(t *testing.T) {
 			return ""
 		})
 		// Vault resolves a token's policies by name on every request, so the
-		// token issued at editor follows the new tier at once.
+		// token issued at editor follows the new role at once.
 		if err := kvPut(t, lowerToken, alpha, leaf, "v=2"); !refused(err) {
-			t.Errorf("a token issued at editor still wrote after the tier was lowered; err: %v", err)
+			t.Errorf("a token issued at editor still wrote after the role was lowered; err: %v", err)
 		}
 		if got, err := kvGet(t, lowerToken, alpha, leaf, "v"); err != nil || got != "1" {
-			t.Errorf("viewer could not read its own secret after the tier change: got %q, err %v", got, err)
+			t.Errorf("viewer could not read its own secret after the role change: got %q, err %v", got, err)
 		}
 		newToken, _ := vaultLogin(t, alpha, role, saToken(t, alphaNS, "lower"))
 		if err := kvPut(t, newToken, alpha, leaf, "v=3"); !refused(err) {
-			t.Errorf("a new login after the tier change wrote a secret; err: %v", err)
+			t.Errorf("a new login after the role change wrote a secret; err: %v", err)
 		}
 	})
 
@@ -1204,7 +1204,7 @@ func TestE2E(t *testing.T) {
 		waitTIReady(t, tiPrefix+beta+".eso")
 		createServiceAccount(t, betaNS, "reader", map[string]string{
 			annPrefix + "kv":   "true",
-			annPrefix + "tier": "viewer",
+			annPrefix + "role": "viewer",
 		})
 		for _, o := range grants {
 			waitVCO(t, o.kind, o.name)

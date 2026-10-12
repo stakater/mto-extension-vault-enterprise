@@ -28,8 +28,8 @@ import (
 // Human SSO, as in production: person -> Vault (oidc/sso) -> Dex -> Keycloak.
 // The lab's Keycloak (make lab-keycloak) holds the users and their groups;
 // Dex (make lab-dex, configured by DCO) fronts it through Keycloak's "dex"
-// client. Each tenant's Vault namespace has an oidc/sso mount with one role per
-// tier, bound to the group <tenant>-<tier>s.
+// client. Each tenant's Vault namespace has an oidc/sso mount with one Vault
+// role per role, sso.<tenant>.<role>, bound to the group <tenant>-<role>s.
 //
 // There is no browser. oidcLogin does what `vault login -method=oidc` and a
 // person at the keyboard do together, over plain HTTP.
@@ -48,8 +48,8 @@ const (
 	claimMismatch = "does not match any associated bound claim values"
 )
 
-// ssoRole is the tenant chart's vault.ssoRoleName: sso.<tenant>.<tier>.
-func ssoRole(tenant, tier string) string { return "sso." + tenant + "." + tier }
+// ssoRole is the tenant chart's vault.ssoRoleName: sso.<tenant>.<role>.
+func ssoRole(tenant, role string) string { return "sso." + tenant + "." + role }
 
 // newSSOClient returns an HTTP client that reaches Dex and Keycloak through
 // port-forwards while keeping their in-cluster URLs, so every issuer and

@@ -1,18 +1,19 @@
 {{- if include "vault.componentEnabled" (dict "component" "core" "ctx" .) }}
 {{/*
-Section 7 — per (tenant, tier) SSO role + policy. For each tier in sso.tiers:
-  - Policy sso.<tenant>.<tier> in the tenant's Vault namespace, granting that
-    tier's KV access across the tenant.
-  - JWTOIDCAuthEngineRole sso.<tenant>.<tier> on the tenant's oidc/sso mount,
-    bound to the groups claim "<tenant>-<tier>s" (or whatever
+Section 7 — one SSO Vault role + policy per (tenant, role). For each role in
+sso.roles:
+  - Policy sso.<tenant>.<role> in the tenant's Vault namespace, granting that
+    role's KV access across the tenant.
+  - JWTOIDCAuthEngineRole sso.<tenant>.<role> on the tenant's oidc/sso mount,
+    bound to the groups claim "<tenant>-<role>s" (or whatever
     sso.tenantGroupTemplate renders to).
 
-Every role accepts the audience sso.oidc.clientId. An OIDC ID token's `aud`
-always holds the client ID it was issued to (Dex puts only that there), so the
-audience is not a second value to keep in step: a separate sso.audience that
-differed from the client ID refused every login.
+Every Vault role accepts the audience sso.oidc.clientId. An OIDC ID token's
+`aud` always holds the client ID it was issued to (Dex puts only that there),
+so the audience is not a second value to keep in step: a separate sso.audience
+that differed from the client ID refused every login.
 
-Tier ladder (most → least privilege):
+Role ladder (most → least privilege):
   admin        KV CRUD + delete/undelete/destroy
   editor       KV create/read/update/patch/list
   viewer       KV read/list
@@ -30,13 +31,13 @@ Tier ladder (most → least privilege):
 {{- $env := .Values.env }}
 {{- $labels := include "vault.labels" . }}
 {{- $ssoMount := include "vault.ssoMount" . }}
-{{- range $tier := $.Values.sso.tiers }}
-{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" (toString $tier)) }}{{ fail (printf "sso.tiers entry %q is not a DNS label — it is a part of the dot-joined role name sso.<tenant>.<tier>" $tier) }}{{ end }}
-{{- if eq (toString $tier) "fallback" }}{{ fail "sso.tiers entry \"fallback\" is reserved: sso.<tenant>.fallback is the name of the role without a group binding (sso.tenantRoleMapping.fallback), so a tier of that name would collide with it. Rename the tier" }}{{ end }}
-{{- $caps := index $.Values.tierCaps $tier }}
-{{- if not $caps }}{{ fail (printf "sso.tiers includes %q but tierCaps has no entry for it" $tier) }}{{ end }}
-{{- $roleName := include "vault.ssoRoleName" (dict "tenant" $tenant "tier" $tier) }}
-{{- $group := include "vault.ssoGroup" (dict "tenant" $tenant "tier" $tier
+{{- range $role := $.Values.sso.roles }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" (toString $role)) }}{{ fail (printf "sso.roles entry %q is not a DNS label — it is a part of the dot-joined Vault role name sso.<tenant>.<role>" $role) }}{{ end }}
+{{- if eq (toString $role) "fallback" }}{{ fail "sso.roles entry \"fallback\" is reserved: sso.<tenant>.fallback is the name of the Vault role without a group binding (sso.tenantRoleMapping.fallback), so a role of that name would collide with it. Rename the role" }}{{ end }}
+{{- $caps := index $.Values.roleCaps $role }}
+{{- if not $caps }}{{ fail (printf "sso.roles includes %q but roleCaps has no entry for it" $role) }}{{ end }}
+{{- $roleName := include "vault.ssoRoleName" (dict "tenant" $tenant "role" $role) }}
+{{- $group := include "vault.ssoGroup" (dict "tenant" $tenant "role" $role
                                                "mapping" $.Values.sso.tenantRoleMapping
                                                "defaultTemplate" $.Values.sso.tenantGroupTemplate) }}
 ---
@@ -51,20 +52,20 @@ spec:
   {{- include "vault.vcoAuth" (dict "ctx" $ "target" $tenant) | nindent 2 }}
   name: {{ $roleName }}
   policy: |
-    # SSO tier {{ $tier }} for tenant {{ $tenant }}.
+    # SSO role {{ $role }} for tenant {{ $tenant }}.
     {{- /* The mount root, on its own line because `kv/metadata/<env>/*` does
            NOT match `kv/metadata/` — a prefix glob never covers the prefix
            itself. Without it the web UI's secrets browser is refused on its
-           first request and shows an empty tree for every tier. */}}
+           first request and shows an empty tree for every role. */}}
     path "kv/metadata" { capabilities = ["list"] }
     # KV — audit-read gets metadata list only; everyone else gets data.
-    {{- if eq $tier "audit-read" }}
+    {{- if eq $role "audit-read" }}
     path "kv/metadata/{{ $env }}/*" { capabilities = ["list"] }
     {{- else }}
     path "kv/data/{{ $env }}/*"     { capabilities = {{ $caps }} }
     path "kv/metadata/{{ $env }}/*" { capabilities = {{ $caps }} }
     {{- end }}
-    {{- if eq $tier "admin" }}
+    {{- if eq $role "admin" }}
     path "kv/delete/{{ $env }}/*"   { capabilities = ["update"] }
     path "kv/undelete/{{ $env }}/*" { capabilities = ["update"] }
     path "kv/destroy/{{ $env }}/*"  { capabilities = ["update"] }
@@ -107,16 +108,16 @@ spec:
   {{- end }}
 {{- end }}
 
-{{- /* Fallback role — emitted when sso.tenantRoleMapping.fallback names a tier.
+{{- /* Fallback Vault role — emitted when sso.tenantRoleMapping.fallback names a role.
        It binds NO groups, so any user with a valid OIDC token can log in with
-       role=sso.<tenant>.fallback and get that tier. */ -}}
+       role=sso.<tenant>.fallback and get that role's access. */ -}}
 {{- $fallback := (dig "tenantRoleMapping" "fallback" "deny" $.Values.sso) }}
 {{- if and $fallback (ne $fallback "deny") }}
-{{- if not (has $fallback $.Values.sso.tiers) }}
-{{- fail (printf "sso.tenantRoleMapping.fallback=%q must appear in sso.tiers %v (or be \"deny\")" $fallback $.Values.sso.tiers) }}
+{{- if not (has $fallback $.Values.sso.roles) }}
+{{- fail (printf "sso.tenantRoleMapping.fallback=%q must appear in sso.roles %v (or be \"deny\")" $fallback $.Values.sso.roles) }}
 {{- end }}
 {{- $fallbackRoleName := printf "sso.%s.fallback" $tenant }}
-{{- $fallbackPolicyName := include "vault.ssoRoleName" (dict "tenant" $tenant "tier" $fallback) }}
+{{- $fallbackPolicyName := include "vault.ssoRoleName" (dict "tenant" $tenant "role" $fallback) }}
 ---
 apiVersion: redhatcop.redhat.io/v1alpha1
 kind: JWTOIDCAuthEngineRole

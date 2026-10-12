@@ -1,5 +1,5 @@
 # alice is in the Keycloak group acme-editors, so her SSO login gives the
-# editor tier. The e2e suite logs her in through Keycloak and Dex, and this
+# editor role. The e2e suite logs her in through Keycloak and Dex, and this
 # flow logs in to the UI with the Vault token that gives.
 name: vault-kv-editor
 

@@ -51,7 +51,7 @@
 #  19. tokentype    — every role pins tokenType; batch + period fails.
 #  20. nullfields   — no rendered field is YAML null when the tenant has no workloads.
 #  21. ssoredirect  — empty sso.allowedRedirectUris fails at render, naming the value.
-#  22. ssorootlist  — every SSO tier policy can LIST the kv mount root.
+#  22. ssorootlist  — every SSO role policy can LIST the kv mount root.
 #  23. parentplumb  — install-wide knobs reach the child valuesTemplate and survive
 #                     the tenant chart; an unset token block is omitted, not empty.
 #  24. versionpin   — the bootstrap's tenantChart.version equals the tenant chart
@@ -95,9 +95,9 @@
 #  35. bumpcheck    — hack/version-bump-check.sh in a scratch git repo: a changed
 #                     chart without a version bump fails; with a bump, unchanged,
 #                     or new, it passes.
-#  36. ssotiers     — an SSO tier that is not a DNS label, or is named "fallback"
+#  36. ssoroles     — an SSO role that is not a DNS label, or is named "fallback"
 #                     (the name of the role without a group binding), fails the
-#                     render with its own message; the default tiers render.
+#                     render with its own message; the default roles render.
 #  37. ssoaudience  — every SSO role, the fallback role too, accepts exactly
 #                     sso.oidc.clientId as its audience, for the default client
 #                     and for another one. An ID token's aud is the client ID.
@@ -442,12 +442,12 @@ gd_ok=0; gd_detail=""
 render all "$FIXTURES/values-guards.yaml" > "$WORK/guards.yaml" 2>"$WORK/guards.err" \
   || { gd_ok=1; gd_detail="$gd_detail [guards fixture did not render: $(first "$WORK/guards.err")]"; }
 for pair in \
-  "g-tier-only:kv is not" "g-no-tier:tier is not set" "g-bad-tier:is not a known tier" \
+  "g-role-only:kv is not" "g-no-role:role is not set" "g-bad-role:is not a known role" \
   "g-transit:is not supported" "g-injection:is not a valid app name" "g-wildcard:is not a valid app name" \
   "g-reserved:is not a valid app name" "g-claimed:claimed by more than one" "g-claimer:claimed by more than one" \
   "g-orphan-share:so it grants nothing" "default:cannot be granted Vault access" "g-foreign-ns:is not a namespace of tenant" \
   "g-unknown-key:unknown annotation" "g-bad-bool:must be" "g-app-only:no app identity is registered" \
-  "g.dotted:cannot be used with Vault" "g-share-err:is not a known tier"; do
+  "g.dotted:cannot be used with Vault" "g-share-err:is not a known role"; do
   sa="${pair%%:*}"; msg="${pair#*:}"
   yqs err "select(.kind == \"ConfigMap\" and .metadata.name == \"vault-config-$sa.error\") | .data.ERROR" "$WORK/guards.yaml"
   grep -q -- "$msg" <<<"$err" \
@@ -645,7 +645,7 @@ for p in $ssopols; do
   yqs body "select(.kind == \"Policy\" and .metadata.name == \"$p\") | .spec.policy" "$WORK/all.raw"
   grep -q 'path "kv/metadata" { capabilities = \["list"\] }' <<<"$body" || { sl_ok=1; sl_detail="$sl_detail [$p cannot list the kv root]"; }
 done
-[ "$n_sso" -eq 4 ] || { sl_ok=1; sl_detail="$sl_detail [expected 4 SSO tier policies, found $n_sso]"; }
+[ "$n_sso" -eq 4 ] || { sl_ok=1; sl_detail="$sl_detail [expected 4 SSO role policies, found $n_sso]"; }
 check ssorootlist "$sl_ok" "$sl_detail"
 
 # 23. parentplumb — parsed as YAML, never grepped
@@ -730,8 +730,8 @@ done
 cat > "$WORK/coll.yaml" <<'YAML'
 tenant: t
 serviceAccounts:
-  - metadata: {name: api-x, namespace: t-web, annotations: {vault.stakater.com/kv: "true", vault.stakater.com/tier: editor}}
-  - metadata: {name: x, namespace: t-web-api, annotations: {vault.stakater.com/kv: "true", vault.stakater.com/tier: viewer}}
+  - metadata: {name: api-x, namespace: t-web, annotations: {vault.stakater.com/kv: "true", vault.stakater.com/role: editor}}
+  - metadata: {name: x, namespace: t-web-api, annotations: {vault.stakater.com/kv: "true", vault.stakater.com/role: viewer}}
 YAML
 render all "$WORK/coll.yaml" > "$WORK/coll.out" 2>"$WORK/coll.err" || { nc_ok=1; nc_detail="$nc_detail [collision fixture failed to render: $(first "$WORK/coll.err")]"; }
 yqs pnames 'select(.kind == "Policy") | .metadata.name' "$WORK/coll.out"
@@ -753,12 +753,12 @@ nc_pair() {
   [ -z "$d" ] || { nc_ok=1; nc_detail="$nc_detail [$1: two tenants render the same objects: $d]"; }
 }
 # Across tenants: tenant a, namespace b-c vs tenant a-b, namespace c.
-printf 'tenant: a\nserviceAccounts:\n  - metadata: {name: d, namespace: b-c, annotations: {vault.stakater.com/kv: "true", vault.stakater.com/tier: editor}}\n' > "$WORK/xa.yaml"
-printf 'tenant: a-b\nserviceAccounts:\n  - metadata: {name: d, namespace: c, annotations: {vault.stakater.com/kv: "true", vault.stakater.com/tier: editor}}\n' > "$WORK/xb.yaml"
+printf 'tenant: a\nserviceAccounts:\n  - metadata: {name: d, namespace: b-c, annotations: {vault.stakater.com/kv: "true", vault.stakater.com/role: editor}}\n' > "$WORK/xa.yaml"
+printf 'tenant: a-b\nserviceAccounts:\n  - metadata: {name: d, namespace: c, annotations: {vault.stakater.com/kv: "true", vault.stakater.com/role: editor}}\n' > "$WORK/xb.yaml"
 nc_pair "a/b-c vs a-b/c" "$WORK/xa.yaml" "$WORK/xb.yaml"
 # Across name families: tenant sso's own Policy for namespace acme and
 # ServiceAccount admin vs tenant acme's SSO admin Policy (sso.acme.admin).
-printf 'tenant: sso\nserviceAccounts:\n  - metadata: {name: admin, namespace: acme, annotations: {vault.stakater.com/kv: "true", vault.stakater.com/tier: editor}}\n' > "$WORK/fa.yaml"
+printf 'tenant: sso\nserviceAccounts:\n  - metadata: {name: admin, namespace: acme, annotations: {vault.stakater.com/kv: "true", vault.stakater.com/role: editor}}\n' > "$WORK/fa.yaml"
 printf 'tenant: acme\nsso: {enabled: true, oidc: {issuerUrl: "https://idp.example"}}\n' > "$WORK/fb.yaml"
 nc_pair "sso/acme/admin vs acme SSO admin" "$WORK/fa.yaml" "$WORK/fb.yaml"
 check namecollide "$nc_ok" "$nc_detail"
@@ -818,7 +818,7 @@ yqs tvvals 'select(.kind == "Template" and .metadata.name == "mto-extension-vaul
 # The per-tenant placeholders are t-op-v2 expressions; substitute them the way
 # t-op-v2 would before rendering the tenant chart with the result.
 sed -e 's/{{ \.parameters\.tenant | quote }}/"team-a"/' -e 's/{{ \.parameters\.knownTenants | quote }}/"team-a"/' \
-    -e 's/{{ \.parameters\.serviceAccounts | toJson }}/[{"metadata":{"name":"app","namespace":"team-a-dev","annotations":{"vault.stakater.com\/kv":"true","vault.stakater.com\/tier":"editor"}}}]/' \
+    -e 's/{{ \.parameters\.serviceAccounts | toJson }}/[{"metadata":{"name":"app","namespace":"team-a-dev","annotations":{"vault.stakater.com\/kv":"true","vault.stakater.com\/role":"editor"}}}]/' \
     -e 's/{{ \.parameters\.deployments | toJson }}/[]/' <<<"$tvvals" > "$WORK/tv-values.yaml"
 if grep -q '{{' "$WORK/tv-values.yaml"; then tv_ok=1; tv_detail="$tv_detail [unsubstituted placeholder: $(grep -m1 '{{' "$WORK/tv-values.yaml")]"; fi
 "$HELM" template x "$CHART" -n "$NS" -f "$WORK/tv-values.yaml" --set component=all > "$WORK/tv-tenant.yaml" 2>"$WORK/tv.err" \
@@ -978,21 +978,21 @@ bc_case new-chart 0
 [ -z "$bc_detail" ] || bc_ok=1
 check bumpcheck "$bc_ok" "$bc_detail"
 
-# 36. ssotiers — every bad tier fails with its own message; the default tiers render.
+# 36. ssoroles — every bad role fails with its own message; the default roles render.
 st_ok=0; st_detail=""
-printf 'sso:\n  tiers: [fallback]\ntierCaps:\n  fallback: %s\n' "'[\"read\"]'" > "$WORK/sst-fallback.yaml"
-printf 'sso:\n  tiers: [Bad.Tier]\n' > "$WORK/sst-dns.yaml"
+printf 'sso:\n  roles: [fallback]\nroleCaps:\n  fallback: %s\n' "'[\"read\"]'" > "$WORK/sst-fallback.yaml"
+printf 'sso:\n  roles: [Bad.Role]\n' > "$WORK/sst-dns.yaml"
 for c in "fallback:is reserved" "dns:is not a DNS label"; do
   name="${c%%:*}"; msg="${c#*:}"
   if render core "$FIXTURES/values-full.yaml" -f "$WORK/sst-$name.yaml" > /dev/null 2>"$WORK/sst.err"; then
-    st_ok=1; st_detail="$st_detail [tier $name rendered]"
+    st_ok=1; st_detail="$st_detail [role $name rendered]"
   else
-    grep -q -- "$msg" "$WORK/sst.err" || { st_ok=1; st_detail="$st_detail [tier $name failed elsewhere: $(first "$WORK/sst.err")]"; }
+    grep -q -- "$msg" "$WORK/sst.err" || { st_ok=1; st_detail="$st_detail [role $name failed elsewhere: $(first "$WORK/sst.err")]"; }
   fi
 done
 yqs ssoroles 'select(.kind == "JWTOIDCAuthEngineRole") | .metadata.name' "$WORK/all.raw"
 [ -n "$ssoroles" ] || { st_ok=1; st_detail="$st_detail [values-full rendered no SSO role — the refusals above prove nothing]"; }
-check ssotiers "$st_ok" "$st_detail"
+check ssoroles "$st_ok" "$st_detail"
 
 # 37. ssoaudience — every SSO role, the fallback role too, accepts exactly the
 # client ID as its audience: with the default client and with another one.

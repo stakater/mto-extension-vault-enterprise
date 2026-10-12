@@ -1,4 +1,4 @@
-# dave is in the Keycloak group acme-audit-reads: the audit-read tier lists
+# dave is in the Keycloak group acme-audit-reads: the audit-read role lists
 # secret names, and cannot read a value.
 name: vault-kv-audit
 

@@ -8,58 +8,58 @@ tenant: team-a
 knownTenants: "team-a,team-b"
 eso: enabled
 serviceAccounts:
-  # tier with no engine
-  - metadata: { name: g-tier-only, namespace: team-a-dev, annotations: { vault.stakater.com/tier: editor } }
-  # engine with no tier
-  - metadata: { name: g-no-tier, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true" } }
-  # unknown tier
-  - metadata: { name: g-bad-tier, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editorr } }
+  # role with no engine
+  - metadata: { name: g-role-only, namespace: team-a-dev, annotations: { vault.stakater.com/role: editor } }
+  # engine with no role
+  - metadata: { name: g-no-role, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true" } }
+  # unknown role
+  - metadata: { name: g-bad-role, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/role: editorr } }
   # an OpenBao-extension engine this extension does not support
-  - metadata: { name: g-transit, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor, vault.stakater.com/transit: "true" } }
+  - metadata: { name: g-transit, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/role: editor, vault.stakater.com/transit: "true" } }
   # app name that would break out of the policy path
   - metadata:
       name: g-injection
       namespace: team-a-dev
       annotations:
         vault.stakater.com/kv: "true"
-        vault.stakater.com/tier: editor
+        vault.stakater.com/role: editor
         vault.stakater.com/app: 'x/*" { capabilities = ["sudo"] } path "kv/data/dev/team-a-prod'
   # app name that is Vault's single-segment wildcard
-  - metadata: { name: g-wildcard, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor, vault.stakater.com/app: "+" } }
+  - metadata: { name: g-wildcard, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/role: editor, vault.stakater.com/app: "+" } }
   # app name colliding with a chart-owned prefix
-  - metadata: { name: g-reserved, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor, vault.stakater.com/app: _shared } }
+  - metadata: { name: g-reserved, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/role: editor, vault.stakater.com/app: _shared } }
   # two ServiceAccounts resolving to one app: the claimant, and the one that
   # declared nothing and is defended by its own name
-  - metadata: { name: g-claimed, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor } }
-  - metadata: { name: g-claimer, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: admin, vault.stakater.com/app: g-claimed } }
+  - metadata: { name: g-claimed, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/role: editor } }
+  - metadata: { name: g-claimer, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/role: admin, vault.stakater.com/app: g-claimed } }
   # share annotations on a ServiceAccount whose annotations are rejected: the
   # share templates must not render for it (their `not $f.errors` gate)
-  - metadata: { name: g-share-err, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editorr, vault.stakater.com/kv-export-tenant: team-b, vault.stakater.com/kv-import-tenant: team-b } }
+  - metadata: { name: g-share-err, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/role: editorr, vault.stakater.com/kv-export-tenant: team-b, vault.stakater.com/kv-import-tenant: team-b } }
   # sharing annotation with kv off
   - metadata: { name: g-orphan-share, namespace: team-a-dev, annotations: { vault.stakater.com/kv-export-tenant: team-b } }
   # the default ServiceAccount
-  - metadata: { name: default, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor } }
+  - metadata: { name: default, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/role: editor } }
   # subscribing to a namespace outside the tenant
-  - metadata: { name: g-foreign-ns, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor, vault.stakater.com/kv-subscribe-ns: nowhere-ns } }
+  - metadata: { name: g-foreign-ns, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/role: editor, vault.stakater.com/kv-subscribe-ns: nowhere-ns } }
   # unknown key
-  - metadata: { name: g-unknown-key, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor, vault.stakater.com/subscribe-to-ns: team-a-dev } }
+  - metadata: { name: g-unknown-key, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/role: editor, vault.stakater.com/subscribe-to-ns: team-a-dev } }
   # misspelled boolean
-  - metadata: { name: g-bad-bool, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "ture", vault.stakater.com/tier: editor } }
+  - metadata: { name: g-bad-bool, namespace: team-a-dev, annotations: { vault.stakater.com/kv: "ture", vault.stakater.com/role: editor } }
   # app named but kv off — registers nothing
   - metadata: { name: g-app-only, namespace: team-a-dev, annotations: { vault.stakater.com/app: payments } }
   # subscribes to a sibling namespace properly (positive control for the join check)
-  - metadata: { name: sub-ok, namespace: team-a-prod, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor, vault.stakater.com/kv-subscribe-ns: team-a-dev } }
+  - metadata: { name: sub-ok, namespace: team-a-prod, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/role: editor, vault.stakater.com/kv-subscribe-ns: team-a-dev } }
   # does NOT subscribe, yet a Deployment of its will try to read a sibling's _shared
-  - metadata: { name: sub-missing, namespace: team-a-prod, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor } }
+  - metadata: { name: sub-missing, namespace: team-a-prod, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/role: editor } }
   # imports from a tenant that is not in the roster (a typo that never self-heals)
-  - metadata: { name: imp-bad, namespace: team-a-prod, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor, vault.stakater.com/kv-import-tenant: "team-bb" } }
+  - metadata: { name: imp-bad, namespace: team-a-prod, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/role: editor, vault.stakater.com/kv-import-tenant: "team-bb" } }
   # correct, and in another namespace
-  - metadata: { name: good-sa, namespace: team-a-prod, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor } }
+  - metadata: { name: good-sa, namespace: team-a-prod, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/role: editor } }
   # dotted ServiceAccount name — legal in Kubernetes, rejected because every
   # chart-reserved name suffix is dot-separated
-  - metadata: { name: g.dotted, namespace: team-a-prod, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor, vault.stakater.com/app: payments } }
+  - metadata: { name: g.dotted, namespace: team-a-prod, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/role: editor, vault.stakater.com/app: payments } }
   # target for the hostile-input Deployments below — keeps good-sa's index entry stable
-  - metadata: { name: hostile-sa, namespace: team-a-prod, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/tier: editor, vault.stakater.com/app: "no" } }
+  - metadata: { name: hostile-sa, namespace: team-a-prod, annotations: { vault.stakater.com/kv: "true", vault.stakater.com/role: editor, vault.stakater.com/app: "no" } }
 deployments:
   # two Deployments, one ServiceAccount, identical ask -> ONE ExternalSecret
   - metadata: { name: d-dedupe-a, namespace: team-a-prod, annotations: { vault.stakater.com/kv-secret.db: postgres } }

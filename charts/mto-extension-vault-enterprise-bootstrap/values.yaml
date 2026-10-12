@@ -90,7 +90,7 @@ tenantValues: {}
 #    oidc:
 #      clientId: vault
 #      clientSecretRef: { name: vault-oidc-client-secret, key: client-secret }
-#    tiers: [admin, editor, viewer]
+#    roles: [admin, editor, viewer]
 
 # Drift protection for everything the Templates render (t-op-v2 Template
 # spec.sync), applied to the parent and child Templates.

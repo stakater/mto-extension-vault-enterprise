@@ -135,8 +135,8 @@ knownTenants, serviceAccounts and deployments differ per tenant; the child
 valuesTemplate adds those as t-op-v2 placeholders.
 
 .Values.tenantValues is merged in as given, so any tenant chart value can be set
-install-wide (vaultCABundle, networkPolicy, monitoring, sso.oidc.*, sso.tiers,
-tierCaps, …). A key this chart already owns fails the render instead of being
+install-wide (vaultCABundle, networkPolicy, monitoring, sso.oidc.*, sso.roles,
+roleCaps, …). A key this chart already owns fails the render instead of being
 silently overridden, naming the bootstrap value to set instead.
 
 t-op-v2 renders the valuesTemplate as a Go template, so a value containing "{{"

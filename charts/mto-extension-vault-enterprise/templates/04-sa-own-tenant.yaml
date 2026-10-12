@@ -13,7 +13,7 @@ namespace owned by .Values.tenant: the child TI's objectFieldRef LIST is scoped
 by namespaceSelector matchLabels { <tenantLabelKey>: <tenant> }.
 
   vault.stakater.com/kv                "true" → the app's own KV prefix
-  vault.stakater.com/tier              required with kv: viewer | editor | admin | audit-read
+  vault.stakater.com/role              required with kv: viewer | editor | admin | audit-read
   vault.stakater.com/app               optional: the app that owns the KV prefix (default: SA name)
   vault.stakater.com/kv-subscribe-ns   intra-tenant: CSV of writer namespaces
   vault.stakater.com/kv-export-tenant  cross-tenant share-out: CSV of peer tenants
@@ -63,7 +63,7 @@ by namespaceSelector matchLabels { <tenantLabelKey>: <tenant> }.
 {{- $saName := $f.name }}
 {{- $saNs := $f.ns }}
 {{- $app := $f.app }}
-{{- $tier := $f.tier }}
+{{- $role := $f.role }}
 {{- $caps := $f.caps }}
 {{- $subscribeRaw := dig "metadata" "annotations" "vault.stakater.com/kv-subscribe-ns" "" $sa }}
 {{- $exposeRaw := dig "metadata" "annotations" "vault.stakater.com/kv-export-tenant" "" $sa }}
@@ -78,7 +78,7 @@ by namespaceSelector matchLabels { <tenantLabelKey>: <tenant> }.
 {{- end }}
 {{- else if and $saName $saNs $f.kvOn }}
 {{- $roleName := include "vault.roleName" (dict "tenant" $tenant "saNs" $saNs "saName" $saName) }}
-{{- $entry := printf "serviceAccount: %q\ntier: %q\nkvPath: kv/data/%s/%s/%s/" $saName $tier $env $saNs $app }}
+{{- $entry := printf "serviceAccount: %q\nrole: %q\nkvPath: kv/data/%s/%s/%s/" $saName $role $env $saNs $app }}
 {{- $leaves := index $secretLeaves (printf "%s/%s" $saNs $saName) }}
 {{- if $leaves }}
 {{- $entry = printf "%s\nrequestedSecrets: %q" $entry (join ", " (uniq (sortAlpha $leaves))) }}
@@ -107,14 +107,14 @@ spec:
     # namespace with it.
     path "kv/data/{{ $env }}/{{ $saNs }}/{{ $app }}/*"     { capabilities = {{ $caps }} }
     path "kv/metadata/{{ $env }}/{{ $saNs }}/{{ $app }}/*" { capabilities = {{ $caps }} }
-    {{- if eq $tier "admin" }}
+    {{- if eq $role "admin" }}
     path "kv/delete/{{ $env }}/{{ $saNs }}/{{ $app }}/*"   { capabilities = ["update"] }
     path "kv/undelete/{{ $env }}/{{ $saNs }}/{{ $app }}/*" { capabilities = ["update"] }
     path "kv/destroy/{{ $env }}/{{ $saNs }}/{{ $app }}/*"  { capabilities = ["update"] }
     {{- end }}
     # 2a. _shared/ READ — own Kubernetes namespace sub-prefix (all data-reading
-    # tiers). This is how two apps in one namespace share deliberately.
-    {{- if ne $tier "audit-read" }}
+    # roles). This is how two apps in one namespace share deliberately.
+    {{- if ne $role "audit-read" }}
     path "kv/data/{{ $env }}/_shared/from-{{ $saNs }}/*"     { capabilities = ["read", "list"] }
     {{- end }}
     path "kv/metadata/{{ $env }}/_shared/from-{{ $saNs }}/*" { capabilities = {{ $caps }} }
@@ -122,14 +122,14 @@ spec:
            BOTH the data and the metadata path. In KV v2 the metadata endpoint is
            where the secret's lifecycle lives: `update` sets max_versions /
            delete_version_after / cas_required and `delete` removes every
-           version, so a subscriber with its own tier caps here could destroy
+           version, so a subscriber with its own role caps here could destroy
            secrets it only reads. */ -}}
     {{- if $subscribeRaw }}
-    {{- $subCaps := ternary "[\"list\"]" "[\"read\", \"list\"]" (eq $tier "audit-read") }}
+    {{- $subCaps := ternary "[\"list\"]" "[\"read\", \"list\"]" (eq $role "audit-read") }}
     {{- range $subNs := splitList "," $subscribeRaw }}
     {{- $subNs = trim $subNs }}
     {{- if $subNs }}
-    {{- if ne $tier "audit-read" }}
+    {{- if ne $role "audit-read" }}
     path "kv/data/{{ $env }}/_shared/from-{{ $subNs }}/*"     { capabilities = ["read", "list"] }
     {{- end }}
     path "kv/metadata/{{ $env }}/_shared/from-{{ $subNs }}/*" { capabilities = {{ $subCaps }} }
@@ -137,11 +137,11 @@ spec:
     {{- end }}
     {{- end }}
     # 2b. _shared/ WRITE scoped to own Kubernetes namespace sub-prefix.
-    {{- if or (eq $tier "editor") (eq $tier "admin") }}
+    {{- if or (eq $role "editor") (eq $role "admin") }}
     path "kv/data/{{ $env }}/_shared/from-{{ $saNs }}/*"     { capabilities = {{ $caps }} }
     path "kv/metadata/{{ $env }}/_shared/from-{{ $saNs }}/*" { capabilities = {{ $caps }} }
     {{- end }}
-    {{- if eq $tier "admin" }}
+    {{- if eq $role "admin" }}
     path "kv/delete/{{ $env }}/_shared/from-{{ $saNs }}/*"   { capabilities = ["update"] }
     path "kv/undelete/{{ $env }}/_shared/from-{{ $saNs }}/*" { capabilities = ["update"] }
     path "kv/destroy/{{ $env }}/_shared/from-{{ $saNs }}/*"  { capabilities = ["update"] }

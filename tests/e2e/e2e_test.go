@@ -45,7 +45,7 @@
 // SSO runs through the lab's Keycloak and Dex (make lab-keycloak, make
 // lab-dex), as in production: Vault -> Dex -> Keycloak. The suite logs Keycloak
 // test users in without a browser (sso.go), and checks that each user's group
-// gives exactly its tier, in its own tenant only.
+// gives exactly its role, in its own tenant only.
 //
 //	E2E_DEX_ISSUER, E2E_KEYCLOAK_URL, E2E_DEX_NAMESPACE, E2E_KEYCLOAK_NAMESPACE
 //	                       where Dex and Keycloak run; defaults match the lab
@@ -67,7 +67,7 @@
 // mutation, then the check that failed):
 //
 //   - the original denials and the drift step
-//   - editor tier with delete, viewer tier with patch: the editor soft delete
+//   - editor role with delete, viewer role with patch: the editor soft delete
 //     and the viewer patch (versions step)
 //   - SSO audit-read with data read, SSO editor with destroy: both refusals
 //     (sso audit-read step)
@@ -89,7 +89,7 @@
 //     login works, and the flow fails (ui step)
 //
 // Not mutated yet: the logins that change one binding, the subscriber's
-// metadata update, the tier change, the revocation of an issued token, the
+// metadata update, the role change, the revocation of an issued token, the
 // lifetime hold, the VCO revert and move checks, and the template-operator
 // restore.
 package e2e

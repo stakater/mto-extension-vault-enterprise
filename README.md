@@ -46,9 +46,9 @@ uninstall.
 | own prefix | an app lists its own prefix, but not its namespace level (which names the other apps), and cannot read a sibling's metadata |
 | vco revert | a policy widened by hand in Vault works at first; VCO's drift detection rewrites it, and the same write is refused again |
 | vco move | VCO's webhook refuses to change a CR's `targetNamespace`, and accepts an update that keeps it |
-| tiers | admin can destroy versions, an editor cannot; audit-read can list but not read |
-| sso | Keycloak users log in through Dex; a group gives exactly its tier, in its own tenant only (see below) |
-| sso tiers | audit-read lists and reads no data; the editor cannot destroy a version, the admin can |
+| roles | admin can destroy versions, an editor cannot; audit-read can list but not read |
+| sso | Keycloak users log in through Dex; a group gives exactly its role, in its own tenant only (see below) |
+| sso roles | audit-read lists and reads no data; the editor cannot destroy a version, the admin can |
 | ui | browser-runner flows in the Vault UI, as the SSO users of the docs tenant `acme`: alice signs in through the real OIDC popup (Dex, Keycloak), and bob is refused the editor role; the editor sees the app's secrets and "Create new version", the viewer the keys without it, audit-read the names and "You do not have permission"; the KV layout and the namespace's `_shared/` area. The images are the docs' ([docs/screenshots/](docs/screenshots/)) |
 | configmap | `vault-config-<sa>` has the right values, and logging in and reading with exactly those values works; `vault-apps` indexes the app |
 | template-operator | a deleted `vault-config-<sa>` comes back with the same values (`sync.mode=revert`) |
@@ -59,9 +59,9 @@ uninstall.
 | intra-tenant, subscription | an editor in a second namespace with `kv-subscribe-ns` reads it (directly and through ESO) but cannot write or delete its metadata; an app without the annotation is refused |
 | app annotation | `app` names the prefix, not the ServiceAccount; when two ServiceAccounts claim one app, both get an error ConfigMap and no login role; when one gives the name up, the other's access returns and its data is still there |
 | one app, two namespaces | ServiceAccounts with one name in two namespaces are two apps: each reads its own prefix and not the other's |
-| guards, ServiceAccount | no tier, an unknown tier, a `kv` value that is not `true`/`false`, a misspelled key, `transit`, and the `default` ServiceAccount each get an error ConfigMap and no login role; the other ServiceAccounts still work |
+| guards, ServiceAccount | no role, an unknown role, a `kv` value that is not `true`/`false`, a misspelled key, `transit`, and the `default` ServiceAccount each get an error ConfigMap and no login role; the other ServiceAccounts still work |
 | guards, Deployment | a Deployment that asks for a secret its ServiceAccount does not grant gets a `deploy-error` ConfigMap and no ExternalSecret |
-| tier change | lowering editor to viewer rewrites the policy in place; the token issued at editor and a new login both lose write, and keep read |
+| role change | lowering editor to viewer rewrites the policy in place; the token issued at editor and a new login both lose write, and keep read |
 | removal | removing a ServiceAccount's annotations deletes its Policy, Role, Vault role and ConfigMap, and its login is refused |
 | share | e2e-alpha writes a share, e2e-beta reads it through ESO and cannot write it; each tenant's ServiceAccount is refused by the other's share role |
 | lifetime | deleting e2e-beta's last namespace removes its workload render but keeps its Vault namespace, kv mount and secrets; a new namespace brings the render back |
@@ -80,12 +80,12 @@ call has a timeout, and a login error never prints the ServiceAccount JWT.
 
 SSO runs as in production: Vault → Dex (configured by the Dex Config Operator) →
 Keycloak, all in the lab (`make lab-keycloak`, `make lab-dex`). Keycloak's realm
-`mto` has a group per tenant tier (`<tenant>-<tier>s`) and five test users:
+`mto` has a group per tenant and role (`<tenant>-<role>s`) and five test users:
 `alice` (e2e-alpha-editors), `bob` (e2e-alpha-viewers), `carol`
 (e2e-beta-admins), `dave` (e2e-alpha-audit-reads) and `erin`
 (e2e-alpha-admins); their passwords are in Secret
 `keycloak/keycloak-test-users`. The suite logs them in with no browser, over
-HTTP through port-forwards, and checks that a group gives exactly its tier (bob
+HTTP through port-forwards, and checks that a group gives exactly its role (bob
 cannot take the editor role), in its own tenant only (alice cannot log in to
 e2e-beta, and her token cannot read it).
 

@@ -85,7 +85,8 @@ share.* 6, so no name of one family can equal a name of another. Without it,
 tenant "sso" with namespace "acme" and ServiceAccount "admin" rendered Policy
 sso.acme.admin, the name of tenant acme's SSO admin Policy.
 
-The tier is deliberately not part of it: a tier edit would become a rename.
+The role annotation is deliberately not part of it: a role change would become
+a rename.
 */}}
 {{- define "vault.roleName" -}}
 {{- include "vault.assertName" (printf "kv.%s.%s.%s" .tenant .saNs .saName) -}}
@@ -121,28 +122,28 @@ true
 {{- end -}}
 
 {{/*
-Renders the IdP-side group name for a (tenant, tier) pair.
-Resolution: tenantRoleMapping[<tier>].pattern → tenantGroupTemplate → fail.
+Renders the IdP-side group name for a (tenant, role) pair.
+Resolution: tenantRoleMapping[<role>].pattern → tenantGroupTemplate → fail.
 */}}
 {{- define "vault.ssoGroup" -}}
-{{- $tierEntry := index .mapping .tier -}}
+{{- $roleEntry := index .mapping .role -}}
 {{- $pattern := "" -}}
-{{- if and $tierEntry $tierEntry.pattern -}}
-{{- $pattern = $tierEntry.pattern -}}
+{{- if and $roleEntry $roleEntry.pattern -}}
+{{- $pattern = $roleEntry.pattern -}}
 {{- else if .defaultTemplate -}}
 {{- $pattern = .defaultTemplate -}}
 {{- else -}}
-{{- fail (printf "sso: tier %q has no pattern and no sso.tenantGroupTemplate default is set" .tier) -}}
+{{- fail (printf "sso: role %q has no pattern and no sso.tenantGroupTemplate default is set" .role) -}}
 {{- end -}}
 {{- $s := $pattern -}}
 {{- $s = replace "{tenant}" .tenant $s -}}
-{{- $s = replace "{tier}" .tier $s -}}
+{{- $s = replace "{role}" .role $s -}}
 {{- $s -}}
 {{- end -}}
 
-{{/* Per-tenant-tier SSO role/policy name: sso.<tenant>.<tier>. */}}
+{{/* SSO Vault role/policy name for a (tenant, role) pair: sso.<tenant>.<role>. */}}
 {{- define "vault.ssoRoleName" -}}
-{{- printf "sso.%s.%s" .tenant .tier -}}
+{{- printf "sso.%s.%s" .tenant .role -}}
 {{- end -}}
 
 {{/*
@@ -289,7 +290,7 @@ safe direction to fail.
 */}}
 {{- define "vault.saAnnotationKeys" -}}
 {{- $keys := list
-      "kv" "tier" "app"
+      "kv" "role" "app"
       "kv-subscribe-ns" "kv-export-tenant" "kv-import-tenant" -}}
 {{- toYaml $keys -}}
 {{- end -}}
@@ -299,7 +300,7 @@ Resolves and validates every `vault.stakater.com/` annotation on one
 ServiceAccount, returning a YAML dict the caller parses with `fromYaml`. One
 helper, so validation and the values used to render cannot drift apart.
 
-Returns: name, ns, app, tier, kvOn, caps, and `errors`. A non-empty `errors`
+Returns: name, ns, app, role, kvOn, caps, and `errors`. A non-empty `errors`
 means the caller renders the error ConfigMap and nothing else for this
 ServiceAccount.
 
@@ -354,7 +355,7 @@ tenant and freeze unrelated namespaces.
 {{- end -}}
 {{- $kvOn := eq $kvRaw "true" -}}
 
-{{- $tier := trim (toString (dig "metadata" "annotations" (printf "%stier" $p) "" $sa)) -}}
+{{- $role := trim (toString (dig "metadata" "annotations" (printf "%srole" $p) "" $sa)) -}}
 {{- $app := trim (toString (dig "metadata" "annotations" (printf "%sapp" $p) "" $sa)) -}}
 {{- if not $app -}}{{- $app = $name -}}{{- end -}}
 
@@ -364,29 +365,29 @@ tenant and freeze unrelated namespaces.
 {{- $errs = append $errs (printf "the `default` ServiceAccount cannot be granted Vault access: every pod that omits serviceAccountName runs as `default`, so they would all share one identity and the prefix kv/data/%s/%s/default/. Give each workload its own ServiceAccount and annotate that instead" $v.env $ns) -}}
 {{- end -}}
 
-{{- /* An engine without a tier grants nothing, and a tier without an engine
+{{- /* An engine without a role grants nothing, and a role without an engine
        grants nothing. */ -}}
-{{- if and $tier (not $kvOn) -}}
-{{- $errs = append $errs (printf "%stier is set to %q but %skv is not \"true\", so nothing is granted" $p $tier $p) -}}
+{{- if and $role (not $kvOn) -}}
+{{- $errs = append $errs (printf "%srole is set to %q but %skv is not \"true\", so nothing is granted" $p $role $p) -}}
 {{- end -}}
-{{- if and $kvOn (not $tier) -}}
-{{- $errs = append $errs (printf "%skv is \"true\" but %stier is not set, so no capabilities can be granted. Set a tier: %s" $p $p (join ", " (keys $v.tierCaps | sortAlpha))) -}}
+{{- if and $kvOn (not $role) -}}
+{{- $errs = append $errs (printf "%skv is \"true\" but %srole is not set, so no capabilities can be granted. Set a role: %s" $p $p (join ", " (keys $v.roleCaps | sortAlpha))) -}}
 {{- end -}}
 {{- if and (dig "metadata" "annotations" (printf "%sapp" $p) "" $sa) (not $kvOn) -}}
 {{- $errs = append $errs (printf "%sapp is set but %skv is not \"true\", so no app identity is registered — it only names the prefix a KV grant would use" $p $p) -}}
 {{- end -}}
 
-{{- /* An unknown tier makes the capability lookup nil, which would skip the
+{{- /* An unknown role makes the capability lookup nil, which would skip the
        ServiceAccount with no signal. */ -}}
-{{- if and $tier (not (hasKey $v.tierCaps $tier)) -}}
-{{- $errs = append $errs (printf "%stier %q is not a known tier. Valid tiers: %s" $p $tier (join ", " (keys $v.tierCaps | sortAlpha))) -}}
+{{- if and $role (not (hasKey $v.roleCaps $role)) -}}
+{{- $errs = append $errs (printf "%srole %q is not a known role. Valid roles: %s" $p $role (join ", " (keys $v.roleCaps | sortAlpha))) -}}
 {{- end -}}
 {{- $caps := "" -}}
-{{- if hasKey $v.tierCaps $tier -}}
-{{- $caps = index $v.tierCaps $tier -}}
+{{- if hasKey $v.roleCaps $role -}}
+{{- $caps = index $v.roleCaps $role -}}
 {{- end -}}
-{{- if and $kvOn $tier (hasKey $v.tierCaps $tier) (or (not $caps) (eq $caps "[]")) -}}
-{{- $errs = append $errs (printf "%skv is enabled but tier %q grants no KV capabilities" $p $tier) -}}
+{{- if and $kvOn $role (hasKey $v.roleCaps $role) (or (not $caps) (eq $caps "[]")) -}}
+{{- $errs = append $errs (printf "%skv is enabled but role %q grants no KV capabilities" $p $role) -}}
 {{- end -}}
 
 {{- /* The app name becomes a path segment inside an HCL policy body.
@@ -426,7 +427,7 @@ tenant and freeze unrelated namespaces.
 {{- end -}}
 
 {{- $out := dict
-      "name" $name "ns" $ns "app" $app "tier" $tier
+      "name" $name "ns" $ns "app" $app "role" $role
       "kvOn" $kvOn "caps" $caps
       "errors" $errs -}}
 {{- toYaml $out -}}

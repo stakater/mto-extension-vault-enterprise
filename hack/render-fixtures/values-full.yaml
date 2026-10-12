@@ -60,33 +60,33 @@ serviceAccounts:
       namespace: team-a-dev
       annotations:
         vault.stakater.com/kv: "true"
-        vault.stakater.com/tier: editor
+        vault.stakater.com/role: editor
         vault.stakater.com/app: payments
         vault.stakater.com/kv-subscribe-ns: team-a-tools
         vault.stakater.com/kv-export-tenant: team-b
         vault.stakater.com/kv-import-tenant: team-b
-  # Second tier + second namespace (makes team-a-tools an owned namespace so
+  # Second role + second namespace (makes team-a-tools an owned namespace so
   # app-a's kv-subscribe-ns target is valid).
   - metadata:
       name: app-b
       namespace: team-a-tools
       annotations:
         vault.stakater.com/kv: "true"
-        vault.stakater.com/tier: admin
-  # Read-only tier. No app annotation, so its app is its own name.
+        vault.stakater.com/role: admin
+  # Read-only role. No app annotation, so its app is its own name.
   - metadata:
       name: app-c
       namespace: team-a-dev
       annotations:
         vault.stakater.com/kv: "true"
-        vault.stakater.com/tier: viewer
-  # audit-read tier with a subscription: the metadata-list-only branch.
+        vault.stakater.com/role: viewer
+  # audit-read role with a subscription: the metadata-list-only branch.
   - metadata:
       name: app-d
       namespace: team-a-tools
       annotations:
         vault.stakater.com/kv: "true"
-        vault.stakater.com/tier: audit-read
+        vault.stakater.com/role: audit-read
         vault.stakater.com/kv-subscribe-ns: team-a-dev
   # No vault annotation at all → nothing rendered, no error.
   - metadata:

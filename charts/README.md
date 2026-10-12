@@ -134,7 +134,7 @@ Values that matter (bootstrap chart):
 | `parent.eso` | `enabled` | `"enabled"` or `"disabled"` — a string, not a boolean. |
 | `parent.token` | `{}` | Workload token `type`, `ttl`, `maxTTL`. **Integer seconds.** |
 | `parent.sso.*` | off | Human SSO (see below). `enabled=true` requires `issuerUrl`; the install fails without it. |
-| `tenantValues` | `{}` | Any other tenant chart value, install-wide: `vaultCABundle`, `monitoring`, `sso.oidc.*`, `sso.tiers`, `tierCaps`, `ssoToken`, … A key this chart already sets fails the render and names the value to use. |
+| `tenantValues` | `{}` | Any other tenant chart value, install-wide: `vaultCABundle`, `monitoring`, `sso.oidc.*`, `sso.roles`, `roleCaps`, `ssoToken`, … A key this chart already sets fails the render and names the value to use. |
 
 t-op-v2 pulls the **published** tenant chart, so `tenantValues` is the only way
 to set a tenant chart value on a cluster; editing the tenant chart's own
@@ -163,7 +163,7 @@ label, so this is the same rule MTO already needs.
 
 Inside a tenant, the ServiceAccount annotations decide which app gets which
 access. Anyone who can annotate a ServiceAccount in a tenant namespace can
-request that tenant's access for it, up to the `admin` tier.
+request that tenant's access for it, up to the `admin` role.
 
 ## Workload access
 
@@ -172,7 +172,7 @@ Access is opt-in per ServiceAccount, with annotations:
 | Annotation | Value | Effect |
 |---|---|---|
 | `vault.stakater.com/kv` | `"true"` | The app's own KV prefix. |
-| `vault.stakater.com/tier` | `viewer` \| `editor` \| `admin` \| `audit-read` | Required with `kv`. How much access. |
+| `vault.stakater.com/role` | `viewer` \| `editor` \| `admin` \| `audit-read` | Required with `kv`. How much access. |
 | `vault.stakater.com/app` | name | The app that owns the prefix. Default: the ServiceAccount name. |
 | `vault.stakater.com/kv-subscribe-ns` | CSV of namespaces | Read-only access to those sibling namespaces' `_shared/` prefix. |
 | `vault.stakater.com/kv-export-tenant` | CSV of tenants | Write access to `from-<own>/to-<peer>/` in the shared namespace. |
@@ -229,9 +229,9 @@ otherwise a `vault-config-<deployment>.deploy-error` ConfigMap explains why.
 ## Human SSO
 
 `parent.sso.enabled=true` with `parent.sso.issuerUrl` gives each tenant an OIDC
-mount `oidc/sso` and one role per tier, bound to the IdP group
-`<tenant>-<tier>s` (`sso.tenantGroupTemplate`). The client secret is a Secret
-`vault-oidc-client-secret` (key `client-secret`) in `configNamespace`.
+mount `oidc/sso` and one Vault role per entry of `sso.roles`, bound to the IdP
+group `<tenant>-<role>s` (`sso.tenantGroupTemplate`). The client secret is a
+Secret `vault-oidc-client-secret` (key `client-secret`) in `configNamespace`.
 
 All tenants share one IdP client, `tenantValues.sso.oidc.clientId` (default
 `vault`). Set it to the ID of Vault's client in the IdP (with Dex: the DCO
@@ -280,10 +280,10 @@ his login with the editor role:
 
 ![Vault refuses the login: claim "groups" does not match any associated bound claim values](../docs/screenshots/captured/vault-sso-refused.png)
 
-### What each tier sees in the Vault UI
+### What each role sees in the Vault UI
 
 Tenant `acme`, app `checkout` in namespace `acme-shop`. Each user's Keycloak
-group gives the tier.
+group gives the role.
 
 The app's secrets, under its own prefix `dev/acme-shop/checkout/`:
 
@@ -348,7 +348,7 @@ namespace, then removes the finalizer from the CR.
 Renaming a mount or a tenant is a delete plus a create, so the same applies.
 
 Names are joined with dots (`kv.<tenant>.<namespace>.<sa>`,
-`share.<tenant>.<namespace>.<sa>.out.<peer>`, `sso.<tenant>.<tier>`). None of
+`share.<tenant>.<namespace>.<sa>.out.<peer>`, `sso.<tenant>.<role>`). None of
 the parts can contain a dot, so two different sets of parts can never give the
 same name — with hyphens, namespace `t-web` + ServiceAccount `api-x` and
 namespace `t-web-api` + ServiceAccount `x` did. Each family has its own number

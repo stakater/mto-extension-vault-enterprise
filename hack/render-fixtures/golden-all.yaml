@@ -846,7 +846,7 @@ spec:
     path "kv/data/dev/team-a-dev/payments/*"     { capabilities = ["create", "read", "update", "patch", "list"] }
     path "kv/metadata/dev/team-a-dev/payments/*" { capabilities = ["create", "read", "update", "patch", "list"] }
     # 2a. _shared/ READ — own Kubernetes namespace sub-prefix (all data-reading
-    # tiers). This is how two apps in one namespace share deliberately.
+    # roles). This is how two apps in one namespace share deliberately.
     path "kv/data/dev/_shared/from-team-a-dev/*"     { capabilities = ["read", "list"] }
     path "kv/metadata/dev/_shared/from-team-a-dev/*" { capabilities = ["create", "read", "update", "patch", "list"] }
     path "kv/data/dev/_shared/from-team-a-tools/*"     { capabilities = ["read", "list"] }
@@ -887,7 +887,7 @@ spec:
     path "kv/data/dev/team-a-dev/app-c/*"     { capabilities = ["read", "list"] }
     path "kv/metadata/dev/team-a-dev/app-c/*" { capabilities = ["read", "list"] }
     # 2a. _shared/ READ — own Kubernetes namespace sub-prefix (all data-reading
-    # tiers). This is how two apps in one namespace share deliberately.
+    # roles). This is how two apps in one namespace share deliberately.
     path "kv/data/dev/_shared/from-team-a-dev/*"     { capabilities = ["read", "list"] }
     path "kv/metadata/dev/_shared/from-team-a-dev/*" { capabilities = ["read", "list"] }
     # 2b. _shared/ WRITE scoped to own Kubernetes namespace sub-prefix.
@@ -927,7 +927,7 @@ spec:
     path "kv/undelete/dev/team-a-tools/app-b/*" { capabilities = ["update"] }
     path "kv/destroy/dev/team-a-tools/app-b/*"  { capabilities = ["update"] }
     # 2a. _shared/ READ — own Kubernetes namespace sub-prefix (all data-reading
-    # tiers). This is how two apps in one namespace share deliberately.
+    # roles). This is how two apps in one namespace share deliberately.
     path "kv/data/dev/_shared/from-team-a-tools/*"     { capabilities = ["read", "list"] }
     path "kv/metadata/dev/_shared/from-team-a-tools/*" { capabilities = ["create", "read", "update", "patch", "delete", "list"] }
     # 2b. _shared/ WRITE scoped to own Kubernetes namespace sub-prefix.
@@ -969,7 +969,7 @@ spec:
     path "kv/data/dev/team-a-tools/app-d/*"     { capabilities = ["list"] }
     path "kv/metadata/dev/team-a-tools/app-d/*" { capabilities = ["list"] }
     # 2a. _shared/ READ — own Kubernetes namespace sub-prefix (all data-reading
-    # tiers). This is how two apps in one namespace share deliberately.
+    # roles). This is how two apps in one namespace share deliberately.
     path "kv/metadata/dev/_shared/from-team-a-tools/*" { capabilities = ["list"] }
     path "kv/metadata/dev/_shared/from-team-a-dev/*" { capabilities = ["list"] }
     # 2b. _shared/ WRITE scoped to own Kubernetes namespace sub-prefix.
@@ -1049,7 +1049,7 @@ spec:
     targetNamespace: team-a
   name: sso.team-a.admin
   policy: |
-    # SSO tier admin for tenant team-a.
+    # SSO role admin for tenant team-a.
     path "kv/metadata" { capabilities = ["list"] }
     # KV — audit-read gets metadata list only; everyone else gets data.
     path "kv/data/dev/*"     { capabilities = ["create", "read", "update", "patch", "delete", "list"] }
@@ -1081,7 +1081,7 @@ spec:
     targetNamespace: team-a
   name: sso.team-a.audit-read
   policy: |
-    # SSO tier audit-read for tenant team-a.
+    # SSO role audit-read for tenant team-a.
     path "kv/metadata" { capabilities = ["list"] }
     # KV — audit-read gets metadata list only; everyone else gets data.
     path "kv/metadata/dev/*" { capabilities = ["list"] }
@@ -1109,7 +1109,7 @@ spec:
     targetNamespace: team-a
   name: sso.team-a.editor
   policy: |
-    # SSO tier editor for tenant team-a.
+    # SSO role editor for tenant team-a.
     path "kv/metadata" { capabilities = ["list"] }
     # KV — audit-read gets metadata list only; everyone else gets data.
     path "kv/data/dev/*"     { capabilities = ["create", "read", "update", "patch", "list"] }
@@ -1138,7 +1138,7 @@ spec:
     targetNamespace: team-a
   name: sso.team-a.viewer
   policy: |
-    # SSO tier viewer for tenant team-a.
+    # SSO role viewer for tenant team-a.
     path "kv/metadata" { capabilities = ["list"] }
     # KV — audit-read gets metadata list only; everyone else gets data.
     path "kv/data/dev/*"     { capabilities = ["read", "list"] }
@@ -1153,11 +1153,11 @@ data:
   _usage: One entry per app that uses Vault in this namespace. Paths are API data paths; in the Vault UI switch to namespace org/team-a, open the kv mount and browse <env>/<namespace>/<app>/. The vault-config-<serviceaccount> ConfigMap holds the full environment for one app.
   app-c: |
     serviceAccount: "app-c"
-    tier: "viewer"
+    role: "viewer"
     kvPath: kv/data/dev/team-a-dev/app-c/
   payments: |
     serviceAccount: "app-a"
-    tier: "editor"
+    role: "editor"
     kvPath: kv/data/dev/team-a-dev/payments/
     requestedSecrets: "app-config, db-creds"
 kind: ConfigMap
@@ -1257,11 +1257,11 @@ data:
   _usage: One entry per app that uses Vault in this namespace. Paths are API data paths; in the Vault UI switch to namespace org/team-a, open the kv mount and browse <env>/<namespace>/<app>/. The vault-config-<serviceaccount> ConfigMap holds the full environment for one app.
   app-b: |
     serviceAccount: "app-b"
-    tier: "admin"
+    role: "admin"
     kvPath: kv/data/dev/team-a-tools/app-b/
   app-d: |
     serviceAccount: "app-d"
-    tier: "audit-read"
+    role: "audit-read"
     kvPath: kv/data/dev/team-a-tools/app-d/
 kind: ConfigMap
 metadata:

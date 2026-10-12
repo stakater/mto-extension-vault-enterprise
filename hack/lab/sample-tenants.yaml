@@ -41,7 +41,7 @@ metadata:
   namespace: team-a-dev
   annotations:
     vault.stakater.com/kv: "true"
-    vault.stakater.com/tier: editor
+    vault.stakater.com/role: editor
     vault.stakater.com/kv-export-tenant: team-b
 ---
 apiVersion: v1
@@ -51,7 +51,7 @@ metadata:
   namespace: team-a-dev
   annotations:
     vault.stakater.com/kv: "true"
-    vault.stakater.com/tier: viewer
+    vault.stakater.com/role: viewer
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -60,5 +60,5 @@ metadata:
   namespace: team-b-dev
   annotations:
     vault.stakater.com/kv: "true"
-    vault.stakater.com/tier: admin
+    vault.stakater.com/role: admin
     vault.stakater.com/kv-import-tenant: team-a

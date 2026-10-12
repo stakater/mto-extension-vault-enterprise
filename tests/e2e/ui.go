@@ -38,7 +38,7 @@ const (
 )
 
 // docsUsers are the Keycloak users in the docs tenant's groups (make
-// lab-keycloak), and the tier each one's group gives.
+// lab-keycloak), and the role each one's group gives.
 var docsUsers = map[string]string{"alice": "editor", "bob": "viewer", "dave": "audit-read"}
 
 var (
@@ -50,20 +50,20 @@ var (
 func runUISteps(t *testing.T) {
 	t.Helper()
 	createTenant(t, docsTenant, docsNS)
-	createServiceAccount(t, docsNS, docsApp, map[string]string{annPrefix + "kv": "true", annPrefix + "tier": "editor"})
+	createServiceAccount(t, docsNS, docsApp, map[string]string{annPrefix + "kv": "true", annPrefix + "role": "editor"})
 	waitTIReady(t, tiPrefix+docsTenant)
-	role := roleName(docsTenant, docsNS, docsApp)
-	waitVCO(t, "policies", role)
-	waitVCO(t, "kubernetesauthengineroles", role)
+	appRole := roleName(docsTenant, docsNS, docsApp)
+	waitVCO(t, "policies", appRole)
+	waitVCO(t, "kubernetesauthengineroles", appRole)
 	waitVCO(t, "jwtoidcauthengineconfigs", docsTenant+"-oidc-config")
-	for _, tier := range docsUsers {
-		waitVCO(t, "policies", ssoRole(docsTenant, tier))
-		waitVCO(t, "jwtoidcauthengineroles", ssoRole(docsTenant, tier))
+	for _, role := range docsUsers {
+		waitVCO(t, "policies", ssoRole(docsTenant, role))
+		waitVCO(t, "jwtoidcauthengineroles", ssoRole(docsTenant, role))
 	}
 
 	// The secrets the screenshots show, written by the app itself, with
 	// example values only.
-	appToken, _ := vaultLogin(t, docsTenant, role, saToken(t, docsNS, docsApp))
+	appToken, _ := vaultLogin(t, docsTenant, appRole, saToken(t, docsNS, docsApp))
 	for leaf, kv := range map[string][]string{
 		"db":              {"username=checkout", "password=example-only"},
 		"payment-gateway": {"api-key=example-only"},
@@ -84,11 +84,11 @@ func runUISteps(t *testing.T) {
 	// through the UI's OIDC popup with the user name and password.
 	c := newSSOClient(t)
 	secrets := map[string]string{}
-	for user, tier := range docsUsers {
+	for user, role := range docsUsers {
 		password := testUserPassword(t, user)
-		token, pols, err := oidcLogin(t, c, docsTenant, ssoRole(docsTenant, tier), user, password)
-		if err != nil || !slices.Contains(pols, ssoRole(docsTenant, tier)) {
-			t.Fatalf("%s could not log in to %s as %s: policies %v, err %v", user, docsTenant, tier, pols, err)
+		token, pols, err := oidcLogin(t, c, docsTenant, ssoRole(docsTenant, role), user, password)
+		if err != nil || !slices.Contains(pols, ssoRole(docsTenant, role)) {
+			t.Fatalf("%s could not log in to %s as %s: policies %v, err %v", user, docsTenant, role, pols, err)
 		}
 		key := strings.ToUpper(user)
 		secrets[key+"_TOKEN"] = token
