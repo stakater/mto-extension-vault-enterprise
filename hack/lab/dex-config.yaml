@@ -1,0 +1,59 @@
+# Dex for the lab, configured through the Dex Config Operator (DCO), as in
+# production: person -> Vault (oidc/sso) -> Dex -> Keycloak realm "mto".
+# DCO renders Secret dex/dex-config (key config.yaml) from these resources, the
+# Dex chart mounts it, and DCO restarts the Dex Deployment when it changes.
+#
+# Secrets (created by `make lab-dex`, never in this file):
+#   keycloak-connector-config  the connector's JSON, built from
+#                              keycloak/keycloak-dex-client
+#   dex-vault-client           the "vault" client's secret; the e2e suite copies
+#                              it to <configNamespace>/vault-oidc-client-secret
+apiVersion: auth.stakater.com/v1alpha1
+kind: DexConfig
+metadata:
+  name: dex
+  namespace: dex
+spec:
+  # parent.sso.issuerUrl. The in-cluster Service name: Vault reaches it
+  # directly, the e2e suite through a port-forward that keeps the Host header.
+  issuer: http://dex.dex.svc.cluster.local:5556
+  storage:
+    type: memory
+  web:
+    http: 0.0.0.0:5556
+  oauth2:
+    # One connector and no password DB, so Dex goes straight to Keycloak; no
+    # approval page, so Keycloak's login form is the only page a login shows.
+    skipApprovalScreen: true
+---
+apiVersion: auth.stakater.com/v1alpha1
+kind: Connector
+metadata:
+  name: keycloak
+  namespace: dex
+spec:
+  type: oidc
+  id: keycloak
+  name: Keycloak
+  configSecretRef:
+    name: keycloak-connector-config
+---
+apiVersion: auth.stakater.com/v1alpha1
+kind: Client
+metadata:
+  name: vault
+  namespace: dex
+spec:
+  # Also the audience every Vault SSO role accepts (sso.oidc.clientId).
+  id: vault
+  name: Vault
+  public: false
+  redirectURIs:
+    # The vault CLI's loopback listener, and the callback the e2e suite stops at.
+    - http://localhost:8250/oidc/callback
+    # The Vault UI's callback, at the in-cluster address the UI flows use
+    # (docs/screenshots). Vault sends it without the ?namespace= query.
+    - http://vault.vault.svc:8200/ui/vault/auth/oidc/sso/oidc/callback
+  secretRef:
+    name: dex-vault-client
+    key: client-secret

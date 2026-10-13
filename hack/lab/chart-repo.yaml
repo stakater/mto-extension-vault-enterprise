@@ -1,0 +1,88 @@
+# Plain-HTTP helm chart repository for the lab cluster.
+#
+# The bootstrap chart's child Templates make template-operator-v2 PULL the tenant
+# chart at render time, so the suite has to put this checkout's tenant chart
+# somewhere the operator can fetch it from. Nothing here pushes to ghcr.io: CI has
+# no write credential, and a published version is immutable anyway — the point is
+# to test the working tree, not the last release. hack/lab/chart-repo-publish.sh
+# packages the chart, builds an index and drops both into the ConfigMap below.
+#
+# A classic HTTP repo rather than an in-cluster OCI registry, because
+# template-operator-v2's helm SDK rejects plain-HTTP OCI URLs (`http: server
+# gave HTTP response to HTTPS client`), while its Template CRD accepts
+# `^(https?|oci)://` and its pull path treats a non-OCI URL as a chart repository
+# (internal/helm/pull_helpers.go resolveChartRef). Measured on the v9 scenario
+# cluster, which is where this manifest comes from.
+#
+# nginx-unprivileged listens on :8080 (no CAP_NET_BIND_SERVICE) and carries the
+# securityContext the PSA `restricted` profile requires. The Service maps :80 →
+# :8080 so the bootstrap value is just
+# http://chart-repo.chart-repo.svc.cluster.local.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: chart-repo
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+# Placeholder so the Deployment can mount the volume before the publish script
+# has run. The script replaces this ConfigMap wholesale.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chart-files
+  namespace: chart-repo
+data:
+  index.yaml: |
+    apiVersion: v1
+    entries: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chart-repo
+  namespace: chart-repo
+  labels: { app: chart-repo }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: chart-repo } }
+  template:
+    metadata: { labels: { app: chart-repo } }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:1.27-alpine
+          ports:
+            - { name: http, containerPort: 8080 }
+          volumeMounts:
+            - { name: files, mountPath: /usr/share/nginx/html }
+          readinessProbe:
+            httpGet: { path: /index.yaml, port: 8080 }
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits:   { cpu: 200m, memory: 64Mi }
+      volumes:
+        - name: files
+          configMap: { name: chart-files }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chart-repo
+  namespace: chart-repo
+spec:
+  selector: { app: chart-repo }
+  ports:
+    - { port: 80, targetPort: http }

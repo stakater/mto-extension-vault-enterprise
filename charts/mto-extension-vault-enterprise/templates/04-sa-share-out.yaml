@@ -1,0 +1,62 @@
+{{- if include "vault.componentEnabled" (dict "component" "core" "ctx" .) }}
+{{/*
+Section 4a (share-out) — per `vault.stakater.com/kv-export-tenant: <peer-1>,<peer-2>`
+entry, a Policy + Role pair in the <sharedTenant> Vault namespace granting the SA
+write access to kv/data/<env>/from-<own-tenant>/to-<peer>/*.
+*/}}
+{{- $tenant := required ".Values.tenant must be set by the parent" .Values.tenant }}
+{{- $env := .Values.env }}
+{{- $shared := .Values.sharedTenant.name }}
+{{- $labels := include "vault.labels" . }}
+{{- $k8sMount := include "vault.k8sAuthMount" . }}
+{{- $tenantNamespaces := include "vault.tenantNamespaces" . | fromYaml }}
+{{- $appClaims := include "vault.appClaims" . | fromYaml }}
+{{- range $sa := (ternary .Values.serviceAccounts (list) (kindIs "slice" .Values.serviceAccounts)) }}
+{{- $f := include "vault.saFacts" (dict "sa" $sa "ctx" $ "tenantNamespaces" $tenantNamespaces "appClaims" $appClaims) | fromYaml }}
+{{- $saName := $f.name }}
+{{- $saNs := $f.ns }}
+{{- $exposeRaw := dig "metadata" "annotations" "vault.stakater.com/kv-export-tenant" "" $sa }}
+{{- if and $f.kvOn (not $f.errors) $saName $saNs $exposeRaw }}
+{{- range $peer := splitList "," $exposeRaw }}
+{{- $peer = trim $peer }}
+{{- if include "vault.peerEmittable" (dict "peer" $peer "knownCsv" $.Values.knownTenants) }}
+{{- $shareOutName := include "vault.shareOutName" (dict "tenant" $tenant "saNs" $saNs "saName" $saName "peer" $peer) }}
+---
+apiVersion: redhatcop.redhat.io/v1alpha1
+kind: Policy
+metadata:
+  name: {{ $shareOutName }}
+  namespace: {{ $.Values.configNamespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  {{- include "vault.vcoAuth" (dict "ctx" $ "target" $shared) | nindent 2 }}
+  name: {{ $shareOutName }}
+  policy: |
+    path "kv/data/{{ $env }}/from-{{ $tenant }}/to-{{ $peer }}/*"     { capabilities = ["create", "read", "update", "list"] }
+    path "kv/metadata/{{ $env }}/from-{{ $tenant }}/to-{{ $peer }}/*" { capabilities = ["create", "read", "update", "list"] }
+---
+apiVersion: redhatcop.redhat.io/v1alpha1
+kind: KubernetesAuthEngineRole
+metadata:
+  name: {{ $shareOutName }}
+  namespace: {{ $.Values.configNamespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  {{- include "vault.vcoAuth" (dict "ctx" $ "target" $shared) | nindent 2 }}
+  name: {{ $shareOutName }}
+  path: {{ $k8sMount }}
+  targetServiceAccounts:
+    - {{ $saName }}
+  targetNamespaces:
+    targetNamespaces:
+      - {{ $saNs }}
+  policies:
+    - {{ $shareOutName }}
+  {{- include "vault.roleTokenFields" $ | nindent 2 }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

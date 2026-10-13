@@ -1,0 +1,63 @@
+# Keycloak for the lab: the identity provider behind Dex, as in production
+# (person -> Vault -> Dex -> Keycloak). Dev mode, in-memory: a restart loses the
+# realm, so `make lab-keycloak` runs the setup Job again.
+#
+# The hostname is the in-cluster Service name. Every client uses that one URL:
+# Dex (in-cluster), and the e2e suite (through a port-forward that keeps the
+# Host header), so the issuer in every token is the same string.
+#
+# Secrets (created by `make lab-keycloak`, never in this file):
+#   keycloak-admin        username / password of the bootstrap admin
+#   keycloak-dex-client   client-secret of the "dex" client (Dex's connector)
+#   keycloak-test-users   one password per test user (alice, bob, carol)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keycloak
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: keycloak
+  labels: { app: keycloak }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: keycloak }
+  template:
+    metadata:
+      labels: { app: keycloak }
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.4.0
+          args: ["start-dev"]
+          env:
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              valueFrom: { secretKeyRef: { name: keycloak-admin, key: username } }
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: keycloak-admin, key: password } }
+            - { name: KC_HOSTNAME, value: "http://keycloak.keycloak.svc.cluster.local:8080" }
+            - { name: KC_HTTP_ENABLED, value: "true" }
+            - { name: KC_HEALTH_ENABLED, value: "true" }
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: management, containerPort: 9000 }
+          readinessProbe:
+            httpGet: { path: /health/ready, port: management }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: keycloak
+spec:
+  selector: { app: keycloak }
+  ports:
+    - { name: http, port: 8080, targetPort: http }

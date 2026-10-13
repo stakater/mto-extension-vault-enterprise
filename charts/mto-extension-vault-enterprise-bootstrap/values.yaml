@@ -1,0 +1,104 @@
+# mto-extension-vault-enterprise-bootstrap values.
+#
+# Cluster-level wiring for the Vault Enterprise / MTO integration. Renders once
+# per cluster — the parent watches MTO Tenant CRs and fans out to one child
+# TemplateInstance per Tenant (plus one per enabled optional slice).
+
+# The Kubernetes namespace that holds every Template, TemplateInstance and VCO
+# CR this integration renders, and the ServiceAccount below. Install this chart
+# into it.
+configNamespace: vault-config
+
+# How every rendered VCO CR logs in to Vault: kubernetes auth at `authPath`, in
+# the Vault namespace `namespace` (empty = root), with `role`, as the
+# ServiceAccount `serviceAccount` in configNamespace. This chart creates the
+# ServiceAccount; the Vault side (auth mount, role, policy) is a one-time
+# Vault-admin step — see charts/README.md → "Vault bootstrap".
+vco:
+  authPath: kubernetes
+  role: vco-admin
+  serviceAccount: vco-admin
+  # Parent of every tenant Vault namespace. Empty = root.
+  namespace: ""
+
+# The kubernetes auth mount workloads log in with, inside every tenant (and the
+# shared) Vault namespace: <path>/<name>.
+kubernetesAuth:
+  path: kubernetes
+  name: workloads
+  kubernetesHost: https://kubernetes.default.svc:443
+  # Empty (default): Vault reviews tokens with its own ServiceAccount, bound to
+  # system:auth-delegator — no reviewer credential is stored. Set only when
+  # Vault runs outside this cluster.
+  tokenReviewerServiceAccount: ""
+
+# t-op-v2 install identity. The RBAC in this chart binds to the t-op-v2
+# controller's ServiceAccount; defaults match `helm install template-operator`
+# of the upstream chart.
+templateOperator:
+  serviceAccountName: template-operator-template-operator-v2
+  namespace: stakater-template-operator
+
+# The mto-extension-vault-enterprise chart that t-op-v2 pulls per MTO Tenant at render time.
+# Bump `version` to roll the per-tenant config shape.
+tenantChart:
+  # oci://… or an http(s) chart repository URL.
+  registry: oci://ghcr.io/stakater/charts
+  name: mto-extension-vault-enterprise
+  version: 0.1.0
+  releaseName: mto-extension-vault-enterprise
+  # Optional: a Secret (in configNamespace) with registry credentials.
+  # Shapes (per t-op-v2): {username,password} | {token} | {.dockerconfigjson}.
+  authSecretName: ""
+
+# Parent Template defaults — passed through to every child TI.
+parent:
+  env: dev
+  vaultServer: http://vault.vault.svc.cluster.local:8200
+  tenantLabelKey: stakater.com/tenant
+  sharedTenantName: shared
+  eso: enabled
+  externalSecretRefreshInterval: "1h"
+  # Workload token settings (tenant chart value `token`), integer seconds.
+  # Install-wide. Empty = the tenant chart's own defaults. period is not
+  # exposed: Vault ignores it on a batch token.
+  token: {}
+  #  type: batch
+  #  ttl: 900
+  #  maxTTL: 3600
+  sso:
+    enabled: false
+    issuerUrl: ""
+    # Tenant chart sso.allowedRedirectUris. Empty = the tenant chart default
+    # (the Vault CLI's loopback listener). Set the real console callback for
+    # browser logins.
+    allowedRedirectUris: []
+
+# Install-wide values for the tenant chart, merged as given into every tenant's
+# render. t-op-v2 pulls the PUBLISHED tenant chart, so this is the only way to
+# set a tenant chart value — editing the tenant chart's own values.yaml has no
+# effect on a cluster. Keys this chart already sets (tenant, env, vaultServer,
+# eso, vco, kubernetesAuth, token, sso.enabled, sso.oidc.issuerUrl,
+# sso.allowedRedirectUris, …) fail the render, naming the value to use instead.
+tenantValues: {}
+#  vaultCABundle: |               # Vault's CA, when it is signed by a private CA
+#    -----BEGIN CERTIFICATE-----
+#    ...
+#  monitoring:
+#    enabled: true
+#  sso:
+#    oidc:
+#      clientId: vault
+#      clientSecretRef: { name: vault-oidc-client-secret, key: client-secret }
+#    roles: [admin, editor, viewer]
+
+# Drift protection for everything the Templates render (t-op-v2 Template
+# spec.sync), applied to the parent and child Templates.
+#   off    — apply once per re-render; out-of-band edits persist.
+#   revert — watch every rendered resource and re-apply on drift.
+#   strict — revert + admission webhook blocking third-party UPDATE/DELETE.
+sync:
+  mode: revert
+  # Field paths exempt from drift enforcement. VCO adds its own finalizer to
+  # every CR it reconciles, so strict needs at least metadata.finalizers.
+  ignoreFields: []

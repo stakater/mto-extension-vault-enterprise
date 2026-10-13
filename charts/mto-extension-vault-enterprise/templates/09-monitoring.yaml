@@ -1,0 +1,45 @@
+{{- if include "vault.componentEnabled" (dict "component" "core" "ctx" .) }}
+{{/*
+Section 9 — monitoring (off by default). One PrometheusRule per tenant, with one
+alert: VaultExternalSecretSyncFailed — an ExternalSecret in one of the tenant's
+namespaces has Ready=False for 5m, so a workload is not getting its secret.
+
+ESO's metric is externalsecret_status_condition{name, namespace, condition,
+status} — no tenant label — so the rule selects the tenant's namespaces, which
+the chart knows from the ServiceAccounts and Deployments it renders for. A
+tenant with no namespace gets no rule. Needs ESO's metrics scraped.
+
+There is no alert on VCO objects: VCO's status cannot say whether an object is
+healthy now (charts/README.md → Health), and a CR that never succeeded has no
+ReconcileSuccessful condition for a rule to match.
+*/}}
+{{- if include "vault.on" (dict "name" "monitoring.enabled" "value" .Values.monitoring.enabled) }}
+{{- $tenant := required ".Values.tenant must be set by the parent" .Values.tenant }}
+{{- $labels := include "vault.labels" . }}
+{{- $namespaces := keys (include "vault.tenantNamespaces" . | fromYaml) | sortAlpha }}
+{{- if $namespaces }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: mto-extension-vault-enterprise-{{ $tenant }}
+  namespace: {{ .Values.monitoring.prometheusNamespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  groups:
+    - name: mto-extension-vault-enterprise-{{ $tenant }}.eso
+      rules:
+        - alert: VaultExternalSecretSyncFailed
+          expr: |
+            externalsecret_status_condition{condition="Ready", status="False", namespace=~"{{ join "|" $namespaces }}"} > 0
+          for: 5m
+          labels:
+            severity: warning
+            tenant: {{ $tenant | quote }}
+          annotations:
+            summary: "ExternalSecret {{`{{ $labels.namespace }}/{{ $labels.name }}`}} not syncing"
+            description: "Vault login failure or missing source path. Check the ExternalSecret events and the Vault audit log."
+{{- end }}
+{{- end }}
+{{- end }}

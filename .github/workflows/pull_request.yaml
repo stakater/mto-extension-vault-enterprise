@@ -1,0 +1,42 @@
+name: Pull Request
+
+on:
+  pull_request:
+    branches:
+      - main
+    # '*.md' ignores only root-level Markdown ('*' does not cross a '/'), so a
+    # change to charts/README.md or hack/vco-crds/README.md still runs the checks.
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  chart-tests:
+    name: Chart Tests
+    runs-on: ubuntu-latest
+    # The pinned helm and yq, not the runner image's: the Makefile downloads its
+    # pinned versions only when HELM / YQ_BIN point at a path that does not exist
+    # yet. The render harness is sensitive to the yq version.
+    env:
+      HELM: ${{ github.workspace }}/bin/helm
+      YQ_BIN: ${{ github.workspace }}/bin/yq
+    steps:
+      # Full history: version-bump-check diffs the PR against its base branch.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # crd-validate runs the apiserver's admission pipeline through a Go helper.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      # No credential needed: the VCO CRDs are vendored in hack/vco-crds.
+      - name: Lint, render tests, version pin, CRD schema check
+        run: make all
+      # The release skips a version that is already published, so a changed
+      # chart without a bump would never be released. Caught here instead.
+      - name: A changed chart bumps its version
+        run: make version-bump-check BASE=origin/${{ github.base_ref }}

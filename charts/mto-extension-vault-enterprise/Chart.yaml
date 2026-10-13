@@ -1,0 +1,16 @@
+apiVersion: v2
+name: mto-extension-vault-enterprise
+description: |
+  Vault Enterprise config for one MTO Tenant: a Vault namespace, a KV-v2
+  mount, kubernetes auth, optional OIDC SSO, per-ServiceAccount Policy +
+  Role, intra-tenant and cross-tenant KV sharing, per-Deployment
+  ExternalSecrets.
+
+  Rendered once per Tenant CR by the mto-extension-vault-enterprise-bootstrap parent
+  Template. Pulled by template-operator-v2 — not installed standalone.
+
+  Requires: vault-config-operator (VCO) v1.0.3 or later, the first release
+  with spec.authentication.targetNamespace and a working Namespace kind.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

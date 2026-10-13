@@ -1,0 +1,64 @@
+# Sample tenants for the lab. Only MTO's Tenant CRD is installed, not MTO, so
+# this file plays MTO's part: the Tenant objects, and namespaces carrying the
+# stakater.com/tenant label MTO would put on them.
+#
+#   team-a  team-a-dev   app-a  kv editor, exports to team-b
+#           team-a-dev   app-b  kv viewer
+#   team-b  team-b-dev   app-c  kv admin, imports from team-a
+---
+apiVersion: tenantoperator.stakater.com/v1beta3
+kind: Tenant
+metadata:
+  name: team-a
+spec:
+  quota: small
+---
+apiVersion: tenantoperator.stakater.com/v1beta3
+kind: Tenant
+metadata:
+  name: team-b
+spec:
+  quota: small
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-a-dev
+  labels:
+    stakater.com/tenant: team-a
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-b-dev
+  labels:
+    stakater.com/tenant: team-b
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-a
+  namespace: team-a-dev
+  annotations:
+    vault.stakater.com/kv: "true"
+    vault.stakater.com/role: editor
+    vault.stakater.com/kv-export-tenant: team-b
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-b
+  namespace: team-a-dev
+  annotations:
+    vault.stakater.com/kv: "true"
+    vault.stakater.com/role: viewer
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-c
+  namespace: team-b-dev
+  annotations:
+    vault.stakater.com/kv: "true"
+    vault.stakater.com/role: admin
+    vault.stakater.com/kv-import-tenant: team-a

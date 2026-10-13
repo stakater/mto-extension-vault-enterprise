@@ -1,0 +1,114 @@
+# Child Templates — one per chart component. The parent emits, per MTO Tenant
+# CR with a labelled namespace, one TemplateInstance of the core Template plus
+# one of the eso Template while ESO is enabled. Each TI pulls the same tenant
+# chart and renders one slice of it (values.component), so a missing ESO CRD
+# fails only that tenant's .eso TI at server-side dry-run — the core Vault
+# wiring applies regardless.
+#
+# Only tenant, knownTenants, serviceAccounts and deployments differ per tenant;
+# they are the Template's parameters. Every other tenant chart value is
+# install-wide and rendered here, from this chart's values and tenantValues
+# (see the installWideValues helper). t-op-v2 pulls the published tenant chart,
+# so a value not rendered here cannot be set at all.
+{{- /* Only enabled components get a Template. template-operator-v2 re-validates
+       every Template on a timer by pulling the chart and dry-run rendering it,
+       so an unused Template is a standing chart-pull cost. The predicate below
+       must match the parent gotemplate's TI-emission predicate exactly. */ -}}
+{{- $eso := include "mto-extension-vault-enterprise-bootstrap.esoMode" . }}
+{{- $installWide := include "mto-extension-vault-enterprise-bootstrap.installWideValues" . }}
+{{- /* The kinds the tenant chart renders. The tenant's Namespace and kv mount
+       are rendered by the parent, so they are reported there. */ -}}
+{{- $childKinds := list }}
+{{- range (include "mto-extension-vault-enterprise-bootstrap.vcoKinds" . | fromYamlArray) }}
+{{- if not (has .kind (list "Namespace" "SecretEngineMount")) }}{{ $childKinds = append $childKinds . }}{{ end }}
+{{- end }}
+{{- $slices := list (dict "component" "core" "nameSuffix" "") }}
+{{- if eq $eso "enabled" }}
+{{- $slices = append $slices (dict "component" "eso" "nameSuffix" "-eso") }}
+{{- end }}
+{{- range $slice := $slices }}
+---
+apiVersion: templates.v2.stakater.com/v2alpha1
+kind: Template
+metadata:
+  name: mto-extension-vault-enterprise{{ $slice.nameSuffix }}
+  namespace: {{ $.Values.configNamespace }}
+spec:
+  targetNamespaces:
+    explicit:
+      allow:
+        literal:
+          - {{ $.Values.configNamespace }}
+  {{- /* $ , not . — the slice range above shadows the root context. */}}
+  {{- with include "mto-extension-vault-enterprise-bootstrap.templateSync" $ }}
+  {{- . | nindent 2 }}
+  {{- end }}
+  parameters:
+    - name: tenant
+      required: true
+    # Roster of all real tenant names (CSV). Stamped per-child by the parent
+    # gotemplate; the chart skips cross-tenant shares whose peer isn't listed.
+    - name: knownTenants
+      value: ""
+    - name: serviceAccounts
+    - name: deployments
+{{- if eq $slice.component "core" }}
+  # Per-tenant state of every VCO kind the core slice renders, one output per
+  # kind. A TI reports that its objects were applied, not that VCO could then
+  # write them to Vault. See the vcoOutputs helper for what the two fields can
+  # and cannot say: VCO's status has no "healthy now" signal.
+  #
+  # Each field's inner map holds 50 entries; beyond that entries are dropped and
+  # OutputsResolved reports it. policies and k8sAuthRoles scale with workload
+  # count, so they reach the cap first.
+  outputs:
+    {{- include "mto-extension-vault-enterprise-bootstrap.vcoOutputs" (dict "ns" $.Values.configNamespace "kinds" $childKinds) | nindent 4 }}
+{{- else if eq $slice.component "eso" }}
+  # Per-tenant health of the eso slice. Reading the SecretStore as well as the
+  # ExternalSecrets distinguishes "this one workload" from "this tenant's Vault
+  # login" — a broken store fails every ExternalSecret pointing at it. Keyed
+  # namespace/name because these land in the workload namespaces.
+  outputs:
+    - name: externalSecretSync
+      fromAll:
+        apiVersion: external-secrets.io/v1
+        kind: ExternalSecret
+      keyTemplate: "{.metadata.namespace}/{.metadata.name}"
+      fields:
+        - { name: esReady,  jsonPath: "{.status.conditions[?(@.type=='Ready')].status}" }
+        - { name: esReason, jsonPath: "{.status.conditions[?(@.type=='Ready')].reason}" }
+        # Not status.refreshTime: that is a scalar, so one never-synced
+        # ExternalSecret would hold OutputsResolved False for the whole tenant.
+        - { name: esSince,  jsonPath: "{.status.conditions[?(@.type=='Ready')].lastTransitionTime}" }
+    - name: secretStores
+      fromAll:
+        apiVersion: external-secrets.io/v1
+        kind: SecretStore
+      keyTemplate: "{.metadata.namespace}/{.metadata.name}"
+      fields:
+        - { name: storeReady,  jsonPath: "{.status.conditions[?(@.type=='Ready')].status}" }
+        - { name: storeReason, jsonPath: "{.status.conditions[?(@.type=='Ready')].reason}" }
+{{- end }}
+  helm:
+    chart:
+      repository:
+        url: {{ $.Values.tenantChart.registry | quote }}
+        name: {{ $.Values.tenantChart.name | quote }}
+        version: {{ $.Values.tenantChart.version | quote }}
+        {{- if $.Values.tenantChart.authSecretName }}
+        auth:
+          secretRef:
+            name: {{ $.Values.tenantChart.authSecretName | quote }}
+        {{- end }}
+    releaseName: {{ $.Values.tenantChart.releaseName | quote }}
+    version: v4
+    {{- /* The per-tenant values are quoted: a tenant named 1234 must reach the
+           chart as a string, not a number. */}}
+    valuesTemplate: |
+      component: {{ $slice.component }}
+      tenant: {{ `{{ .parameters.tenant | quote }}` }}
+      knownTenants: {{ `{{ .parameters.knownTenants | quote }}` }}
+      serviceAccounts: {{ `{{ .parameters.serviceAccounts | toJson }}` }}
+      deployments: {{ `{{ .parameters.deployments | toJson }}` }}
+      {{- $installWide | nindent 6 }}
+{{- end }}

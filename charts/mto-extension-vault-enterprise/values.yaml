@@ -1,0 +1,172 @@
+# mto-extension-vault-enterprise chart values.
+#
+# The parent Template stamps the per-tenant values (tenant, knownTenants,
+# serviceAccounts, deployments). The rest cluster around five concerns:
+#   - identity:        tenant, tenantLabelKey, sharedTenant.*
+#   - addressing:      vaultServer, vaultCABundle, configNamespace, vco.*
+#   - auth mounts:     kubernetesAuth.*, sso.mount
+#   - workload tokens: token.*
+#   - human SSO:       sso.* (incl. ssoToken.*)
+
+# Which slice of the chart this render emits. The bootstrap's child Templates
+# set this per TemplateInstance, so ESO lives in its own TI and a missing ESO
+# CRD cannot fail the core Vault wiring.
+#   all   — core + eso (standalone default). Not a complete tenant on its own:
+#           the tenant's Vault namespace and kv mount come from the bootstrap
+#           parent, so they outlive the tenant's labelled namespaces.
+#   core  — VCO CRs + core Kubernetes resources
+#   eso   — SecretStore / ExternalSecret only
+component: all
+
+# Environment slice for KV paths (kv/data/<env>/...).
+env: dev
+
+# Vault URL used in ESO SecretStores and the per-SA ConfigMap VAULT_ADDR.
+# PRODUCTION: https://, and set vaultCABundle when Vault's certificate chains
+# to a private CA.
+vaultServer: http://vault.vault.svc.cluster.local:8200
+
+# Optional PEM CA bundle for Vault's certificate. When set, the chart emits a
+# ConfigMap vault-ca-bundle in every workload namespace and adds VAULT_CACERT
+# to the per-SA ConfigMap. Empty means trust system roots.
+vaultCABundle: ""
+
+# The Kubernetes namespace that holds every VCO CR this chart renders. VCO
+# reads each CR's spec.authentication.serviceAccount from this namespace, and
+# the OIDC client Secret too.
+configNamespace: vault-config
+
+# How every rendered VCO CR logs in to Vault. VCO logs in ONCE, in `namespace`
+# (empty = root), and writes the tenant's objects into
+# <namespace>/<tenant> through spec.authentication.targetNamespace. The role
+# and ServiceAccount are set up once per cluster; see charts/README.md →
+# "Vault bootstrap".
+vco:
+  authPath: kubernetes
+  role: vco-admin
+  serviceAccount: vco-admin
+  # Vault namespace VCO logs in to, and the parent of every tenant namespace.
+  # Empty = root.
+  namespace: ""
+
+# The kubernetes auth mount workloads log in with, inside each tenant's Vault
+# namespace. VCO mounts auth engines at <path>/<name>, so the mount is
+# kubernetes/workloads. ESO and the per-SA ConfigMap (VAULT_K8S_MOUNT) use it.
+kubernetesAuth:
+  path: kubernetes
+  name: workloads
+  kubernetesHost: https://kubernetes.default.svc:443
+  # Empty (default): Vault reviews tokens with its OWN ServiceAccount, which
+  # must be bound to system:auth-delegator, and no reviewer credential is
+  # stored anywhere. Set only when Vault runs outside this cluster: VCO then
+  # mints a token for this ServiceAccount (in configNamespace) and writes it
+  # into Vault as token_reviewer_jwt.
+  tokenReviewerServiceAccount: ""
+
+# ESO toggle: "enabled" or "disabled". When disabled, SecretStore and
+# ExternalSecret CRs are not emitted; workloads talk to Vault directly.
+eso: enabled
+
+# ExternalSecret refreshInterval. ESO logs in to Vault on every refresh, so a
+# short interval × many workloads is a login storm.
+externalSecretRefreshInterval: "1h"
+
+# Cluster-wide namespace label MTO applies to tenant namespaces.
+tenantLabelKey: stakater.com/tenant
+
+# Shared Vault namespace where cross-tenant share paths land. The parent
+# renders its scaffolding once per cluster.
+sharedTenant:
+  name: shared
+
+# ─── Role capabilities (KV) ──────────────────────────────────────────
+# audit-read   list-only on metadata, no data reads — for compliance probes
+# viewer       read + list
+# editor       create/read/update/patch/list
+# admin        editor + delete (data) + delete/undelete/destroy (versions)
+#
+# `patch` makes a partial update atomic; without it clients fall back to
+# read-modify-write and lose one of two concurrent updates.
+roleCaps:
+  audit-read: '["list"]'
+  viewer:     '["read", "list"]'
+  editor:     '["create", "read", "update", "patch", "list"]'
+  admin:      '["create", "read", "update", "patch", "delete", "list"]'
+
+# Workload token settings stamped onto every KubernetesAuthEngineRole.
+# VCO takes these as integer SECONDS, not duration strings. 0 = Vault's default.
+token:
+  ttl: 3600
+  maxTTL: 14400
+  period: 0
+  # service | batch. ESO logs in on every refresh; a batch token is never
+  # written to storage, so the login is far cheaper. A batch token cannot be
+  # renewed or revoked, so ttl is the only way to retire a leaked one — keep
+  # it short if you set batch. Left at `service` so revocability is the default.
+  type: service
+
+# SSO token TTLs (duration strings — the OIDC role takes strings). Shorter than
+# workload tokens: IdP group removal is not enforced on already-issued tokens.
+ssoToken:
+  ttl: "15m"
+  maxTTL: "1h"
+
+# Tenant identity for this chart instance. Required at render time.
+tenant: ""
+
+# Comma-separated roster of all real tenant names, stamped by the parent.
+# Cross-tenant share annotations targeting a peer NOT in the roster are
+# skipped, and self-heal when the peer appears. Empty = no filtering.
+knownTenants: ""
+
+# Lists resolved by the child TI's namespaceSelector. Empty by default.
+serviceAccounts: []
+deployments: []
+
+# ─── Human SSO ───────────────────────────────────────────────────────
+sso:
+  enabled: false
+  # OIDC auth mount inside each tenant namespace: <path>/<name> = oidc/sso.
+  mount:
+    path: oidc
+    name: sso
+  oidc:
+    issuerUrl: ""
+    # The IdP client Vault logs people in through. Also the audience every SSO
+    # role accepts: an ID token's `aud` is the client ID it was issued to.
+    clientId: vault
+    # A Secret in configNamespace holding the client secret under `key`.
+    clientSecretRef:
+      name: vault-oidc-client-secret
+      key: client-secret
+    caBundlePem: ""
+
+  # IdP-group pattern. Placeholders {tenant} and {role}.
+  tenantGroupTemplate: "{tenant}-{role}s"
+
+  # Per-role override of the group pattern: tenantRoleMapping.<role>.pattern.
+  # fallback: a role name emits sso.<tenant>.fallback with NO group binding —
+  # any valid OIDC token gets that role. deny (default) emits nothing.
+  tenantRoleMapping:
+    admin:       {}
+    editor:      {}
+    viewer:      {}
+    audit-read:  {}
+    fallback: deny
+
+  allowedRedirectUris:
+    - "http://localhost:8250/oidc/callback"
+
+  # Roles to emit an SSO Vault role and policy for. Each needs a roleCaps entry.
+  roles:
+    - admin
+    - editor
+    - viewer
+    - audit-read
+
+# ─── Monitoring (PrometheusRule) ─────────────────────────────────────
+# One alert per tenant on its ExternalSecrets failing to sync. Needs the
+# prometheus-operator CRDs, and ESO's metrics scraped (ESO's own ServiceMonitor).
+monitoring:
+  enabled: false
+  prometheusNamespace: monitoring

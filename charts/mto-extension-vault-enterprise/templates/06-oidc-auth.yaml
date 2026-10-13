@@ -1,0 +1,61 @@
+{{- if include "vault.componentEnabled" (dict "component" "core" "ctx" .) }}
+{{/*
+Section 6 — per-tenant OIDC scaffolding for human SSO, gated by sso.enabled.
+
+  - AuthEngineMount oidc/sso in the tenant's Vault namespace.
+  - JWTOIDCAuthEngineConfig pointing at the IdP. Every tenant shares one IdP
+    client (sso.oidc.clientId + clientSecretRef); tenants are told apart by
+    the groups claim → role mapping in §7.
+
+VCO reads the client secret from clientSecretRef in configNamespace.
+
+There is no per-tenant client. The option existed (client id
+"<tenant>-<clientId>") but never worked: the bootstrap could not set it, and
+the roles still bound the shared audience, so every login was refused. It also
+needed one IdP client per tenant, which nothing here creates.
+*/}}
+{{- if include "vault.on" (dict "name" "sso.enabled" "value" .Values.sso.enabled) }}
+{{- if not .Values.sso.oidc.issuerUrl }}
+{{- fail "sso.enabled=true requires sso.oidc.issuerUrl to be set" }}
+{{- end }}
+{{- $name := required ".Values.tenant must be set by the parent" .Values.tenant }}
+{{- $labels := include "vault.labels" . }}
+---
+apiVersion: redhatcop.redhat.io/v1alpha1
+kind: AuthEngineMount
+metadata:
+  name: {{ $name }}-oidc
+  namespace: {{ .Values.configNamespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  {{- include "vault.vcoAuth" (dict "ctx" $ "target" $name) | nindent 2 }}
+  path: {{ .Values.sso.mount.path }}
+  name: {{ .Values.sso.mount.name }}
+  type: oidc
+  # listingVisibility: see the kubernetes mount (01-tenant-scaffolding.yaml).
+  config:
+    listingVisibility: hidden
+---
+apiVersion: redhatcop.redhat.io/v1alpha1
+kind: JWTOIDCAuthEngineConfig
+metadata:
+  name: {{ $name }}-oidc-config
+  namespace: {{ .Values.configNamespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  {{- include "vault.vcoAuth" (dict "ctx" $ "target" $name) | nindent 2 }}
+  path: {{ include "vault.ssoMount" . }}
+  OIDCDiscoveryURL: {{ .Values.sso.oidc.issuerUrl | quote }}
+  {{- if .Values.sso.oidc.caBundlePem }}
+  OIDCDiscoveryCAPEM: |
+{{ .Values.sso.oidc.caBundlePem | indent 4 }}
+  {{- end }}
+  OIDCClientID: {{ .Values.sso.oidc.clientId | quote }}
+  OIDCCredentials:
+    secret:
+      name: {{ .Values.sso.oidc.clientSecretRef.name }}
+    passwordKey: {{ .Values.sso.oidc.clientSecretRef.key }}
+{{- end }}
+{{- end }}

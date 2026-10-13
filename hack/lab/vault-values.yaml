@@ -1,0 +1,18 @@
+# Vault for the local lab: dev mode, in-memory, root token "root".
+# Restarting vault-0 wipes every namespace, policy and mount, and the
+# operator's login with them. Re-run `make lab-vault-bootstrap` after a restart.
+#
+# The image (Community Edition or Enterprise) and the licence Secret are set by
+# `make lab-vault`, not here, so the edition is always an explicit choice.
+server:
+  dev:
+    enabled: true
+    devRootToken: root
+  # Binds Vault's ServiceAccount to system:auth-delegator, so the kubernetes
+  # auth method can review tokens without a stored reviewer JWT.
+  authDelegator:
+    enabled: true
+injector:
+  enabled: false
+ui:
+  enabled: false

@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "mto-extension-vault-enterprise values",
+  "description": "Deliberately minimal. This chart is normally rendered by template-operator-v2 from the bootstrap chart's valuesTemplate, so any constraint here has to accept everything t-op-v2 can send -- including serviceAccounts/deployments arriving as JSON null when a tenant has no workloads yet. Constrained: the switches consumed as string comparisons, because a near-miss there (yes / on / True / 1) silently disables a feature, and the token durations, because VCO takes them as integer seconds and a duration string would fail the whole TemplateInstance at apply. The boolean forms mirror the bootstrap chart's _helpers.tpl: a boolean, or the quoted strings \"true\"/\"false\".",
+  "type": "object",
+  "definitions": {
+    "boolish": {
+      "description": "true or false, as a YAML boolean or as the quoted string \"true\"/\"false\". yes, on, off, 1, 0, True and TRUE are rejected, because they would be read as \"not enabled\" without warning.",
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string",
+          "enum": [
+            "true",
+            "false"
+          ]
+        }
+      ]
+    },
+    "seconds": {
+      "description": "Whole seconds. vault-config-operator's KubernetesAuthEngineRole types these fields as integers, so \"1h\" renders clean and is rejected at apply. 0 means Vault's default.",
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "comment-on-component": "`component` is deliberately NOT constrained here. templates/_helpers.tpl already fails on an unknown component with a message naming the valid set, and a schema enum would pre-empt it with a vaguer error while duplicating the valid list in a second place.",
+  "properties": {
+    "eso": {
+      "description": "A string, not a boolean: \"enabled\" or \"disabled\".",
+      "type": "string",
+      "enum": [
+        "enabled",
+        "disabled"
+      ]
+    },
+    "sso": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "$ref": "#/definitions/boolish"
+        }
+      }
+    },
+    "monitoring": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "$ref": "#/definitions/boolish"
+        }
+      }
+    },
+    "token": {
+      "type": "object",
+      "description": "Workload token settings stamped onto every KubernetesAuthEngineRole. `type` is enumerated because Vault's default/default-service/default-batch resolve against the auth mount's tune, making token semantics depend on state this chart does not own. numUses is deliberately absent: Vault accepts it on a batch token and ignores it.",
+      "properties": {
+        "ttl": {
+          "$ref": "#/definitions/seconds"
+        },
+        "maxTTL": {
+          "$ref": "#/definitions/seconds"
+        },
+        "period": {
+          "$ref": "#/definitions/seconds"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "service",
+            "batch"
+          ],
+          "description": "service persists the token (renewable, revocable, enumerable). batch is never stored (no renewal and no revocation). Pair batch with a short ttl."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,157 @@
+{{- if include "vault.componentEnabled" (dict "component" "core" "ctx" .) }}
+{{/*
+Section 7 — one SSO Vault role + policy per (tenant, role). For each role in
+sso.roles:
+  - Policy sso.<tenant>.<role> in the tenant's Vault namespace, granting that
+    role's KV access across the tenant.
+  - JWTOIDCAuthEngineRole sso.<tenant>.<role> on the tenant's oidc/sso mount,
+    bound to the groups claim "<tenant>-<role>s" (or whatever
+    sso.tenantGroupTemplate renders to).
+
+Every Vault role accepts the audience sso.oidc.clientId. An OIDC ID token's
+`aud` always holds the client ID it was issued to (Dex puts only that there),
+so the audience is not a second value to keep in step: a separate sso.audience
+that differed from the client ID refused every login.
+
+Role ladder (most → least privilege):
+  admin        KV CRUD + delete/undelete/destroy
+  editor       KV create/read/update/patch/list
+  viewer       KV read/list
+  audit-read   KV metadata list only; no data reads
+*/}}
+{{- if include "vault.on" (dict "name" "sso.enabled" "value" .Values.sso.enabled) }}
+{{- /* Every role below is roleType=oidc, for which Vault requires a non-empty
+       allowed_redirect_uris, and the CRD marks allowedRedirectURIs required.
+       Emptied in values, it would render as YAML null and fail the whole
+       tenant's TemplateInstance apply — not just SSO. */ -}}
+{{- if not .Values.sso.allowedRedirectUris }}
+{{- fail "sso.enabled=true requires at least one entry in sso.allowedRedirectUris — Vault rejects an oidc role with no allowed_redirect_uris, so every SSO login would be unusable" }}
+{{- end }}
+{{- $tenant := required ".Values.tenant must be set by the parent" .Values.tenant }}
+{{- $env := .Values.env }}
+{{- $labels := include "vault.labels" . }}
+{{- $ssoMount := include "vault.ssoMount" . }}
+{{- range $role := $.Values.sso.roles }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" (toString $role)) }}{{ fail (printf "sso.roles entry %q is not a DNS label — it is a part of the dot-joined Vault role name sso.<tenant>.<role>" $role) }}{{ end }}
+{{- if eq (toString $role) "fallback" }}{{ fail "sso.roles entry \"fallback\" is reserved: sso.<tenant>.fallback is the name of the Vault role without a group binding (sso.tenantRoleMapping.fallback), so a role of that name would collide with it. Rename the role" }}{{ end }}
+{{- $caps := index $.Values.roleCaps $role }}
+{{- if not $caps }}{{ fail (printf "sso.roles includes %q but roleCaps has no entry for it" $role) }}{{ end }}
+{{- $roleName := include "vault.ssoRoleName" (dict "tenant" $tenant "role" $role) }}
+{{- $group := include "vault.ssoGroup" (dict "tenant" $tenant "role" $role
+                                               "mapping" $.Values.sso.tenantRoleMapping
+                                               "defaultTemplate" $.Values.sso.tenantGroupTemplate) }}
+---
+apiVersion: redhatcop.redhat.io/v1alpha1
+kind: Policy
+metadata:
+  name: {{ $roleName }}
+  namespace: {{ $.Values.configNamespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  {{- include "vault.vcoAuth" (dict "ctx" $ "target" $tenant) | nindent 2 }}
+  name: {{ $roleName }}
+  policy: |
+    # SSO role {{ $role }} for tenant {{ $tenant }}.
+    {{- /* The mount root, on its own line because `kv/metadata/<env>/*` does
+           NOT match `kv/metadata/` — a prefix glob never covers the prefix
+           itself. Without it the web UI's secrets browser is refused on its
+           first request and shows an empty tree for every role. */}}
+    path "kv/metadata" { capabilities = ["list"] }
+    # KV — audit-read gets metadata list only; everyone else gets data.
+    {{- if eq $role "audit-read" }}
+    path "kv/metadata/{{ $env }}/*" { capabilities = ["list"] }
+    {{- else }}
+    path "kv/data/{{ $env }}/*"     { capabilities = {{ $caps }} }
+    path "kv/metadata/{{ $env }}/*" { capabilities = {{ $caps }} }
+    {{- end }}
+    {{- if eq $role "admin" }}
+    path "kv/delete/{{ $env }}/*"   { capabilities = ["update"] }
+    path "kv/undelete/{{ $env }}/*" { capabilities = ["update"] }
+    path "kv/destroy/{{ $env }}/*"  { capabilities = ["update"] }
+    {{- end }}
+---
+apiVersion: redhatcop.redhat.io/v1alpha1
+kind: JWTOIDCAuthEngineRole
+metadata:
+  name: {{ $roleName }}
+  namespace: {{ $.Values.configNamespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  {{- include "vault.vcoAuth" (dict "ctx" $ "target" $tenant) | nindent 2 }}
+  name: {{ $roleName }}
+  path: {{ $ssoMount }}
+  roleType: oidc
+  userClaim: email
+  groupsClaim: groups
+  OIDCScopes:
+    - email
+    - profile
+    - groups
+  boundAudiences:
+    - {{ $.Values.sso.oidc.clientId | quote }}
+  boundClaims:
+    groups:
+      - {{ $group | quote }}
+  tokenPolicies:
+    - {{ $roleName }}
+  allowedRedirectURIs:
+    {{- range $uri := $.Values.sso.allowedRedirectUris }}
+    - {{ $uri | quote }}
+    {{- end }}
+  {{- if $.Values.ssoToken.ttl }}
+  tokenTTL: {{ $.Values.ssoToken.ttl | quote }}
+  {{- end }}
+  {{- if $.Values.ssoToken.maxTTL }}
+  tokenMaxTTL: {{ $.Values.ssoToken.maxTTL | quote }}
+  {{- end }}
+{{- end }}
+
+{{- /* Fallback Vault role — emitted when sso.tenantRoleMapping.fallback names a role.
+       It binds NO groups, so any user with a valid OIDC token can log in with
+       role=sso.<tenant>.fallback and get that role's access. */ -}}
+{{- $fallback := (dig "tenantRoleMapping" "fallback" "deny" $.Values.sso) }}
+{{- if and $fallback (ne $fallback "deny") }}
+{{- if not (has $fallback $.Values.sso.roles) }}
+{{- fail (printf "sso.tenantRoleMapping.fallback=%q must appear in sso.roles %v (or be \"deny\")" $fallback $.Values.sso.roles) }}
+{{- end }}
+{{- $fallbackRoleName := printf "sso.%s.fallback" $tenant }}
+{{- $fallbackPolicyName := include "vault.ssoRoleName" (dict "tenant" $tenant "role" $fallback) }}
+---
+apiVersion: redhatcop.redhat.io/v1alpha1
+kind: JWTOIDCAuthEngineRole
+metadata:
+  name: {{ $fallbackRoleName }}
+  namespace: {{ $.Values.configNamespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  {{- include "vault.vcoAuth" (dict "ctx" $ "target" $tenant) | nindent 2 }}
+  name: {{ $fallbackRoleName }}
+  path: {{ $ssoMount }}
+  roleType: oidc
+  userClaim: email
+  groupsClaim: groups
+  OIDCScopes:
+    - email
+    - profile
+    - groups
+  boundAudiences:
+    - {{ $.Values.sso.oidc.clientId | quote }}
+  # No boundClaims — any valid OIDC token can use this role.
+  tokenPolicies:
+    - {{ $fallbackPolicyName }}
+  allowedRedirectURIs:
+    {{- range $uri := $.Values.sso.allowedRedirectUris }}
+    - {{ $uri | quote }}
+    {{- end }}
+  {{- if $.Values.ssoToken.ttl }}
+  tokenTTL: {{ $.Values.ssoToken.ttl | quote }}
+  {{- end }}
+  {{- if $.Values.ssoToken.maxTTL }}
+  tokenMaxTTL: {{ $.Values.ssoToken.maxTTL | quote }}
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
