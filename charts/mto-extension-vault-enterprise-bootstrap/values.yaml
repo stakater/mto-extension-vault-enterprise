@@ -43,7 +43,7 @@ templateOperator:
 # Bump `version` to roll the per-tenant config shape.
 tenantChart:
   # oci://… or an http(s) chart repository URL.
-  registry: oci://ghcr.io/stakater/charts
+  registry: oci://ghcr.io/stakater/public/charts
   name: mto-extension-vault-enterprise
   version: 0.1.0
   releaseName: mto-extension-vault-enterprise

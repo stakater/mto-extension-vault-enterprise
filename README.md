@@ -107,7 +107,7 @@ licence with `invalid module: "agentic-iam"`. `VAULT_VERSION` defaults to 2.1.1.
 | Workflow | Runs | Does |
 |---|---|---|
 | [pull_request.yaml](.github/workflows/pull_request.yaml) | PRs to `main` | `make all`. No secrets. |
-| [push.yaml](.github/workflows/push.yaml) | pushes to `main` | `make all`, then `make helm-release`: both charts to `oci://ghcr.io/stakater/charts`, tenant chart first. |
+| [push.yaml](.github/workflows/push.yaml) | pushes to `main` | `make all`, then `make helm-release`: both charts to `oci://ghcr.io/stakater/public/charts`, tenant chart first. |
 | [e2e.yaml](.github/workflows/e2e.yaml) | PR approval, label `ok-to-test/kubernetes`, dispatch | `make e2e-kind` on a kind cluster. Needs `secrets.VAULT_LICENSE`. |
 
 `helm-release` never overwrites a published version (GHCR allows tag

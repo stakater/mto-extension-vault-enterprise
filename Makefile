@@ -156,7 +156,7 @@ BOOTSTRAP_CHART_DIR ?= charts/mto-extension-vault-enterprise-bootstrap
 TENANT_VERSION    := $(shell awk '/^version:/{print $$2; exit}' $(TENANT_CHART_DIR)/Chart.yaml)
 BOOTSTRAP_VERSION := $(shell awk '/^version:/{print $$2; exit}' $(BOOTSTRAP_CHART_DIR)/Chart.yaml)
 
-HELM_REGISTRY ?= ghcr.io/stakater/charts
+HELM_REGISTRY ?= ghcr.io/stakater/public/charts
 # GHCR_* is what the workflows set; GIT_* is a local override for pushing to
 # your own registry.
 GIT_USER  ?= $(GHCR_USERNAME)

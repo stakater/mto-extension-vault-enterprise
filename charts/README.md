@@ -115,7 +115,7 @@ e2e teardown can finish.
 
 ```bash
 helm upgrade --install mto-extension-vault-enterprise-bootstrap \
-  oci://ghcr.io/stakater/charts/mto-extension-vault-enterprise-bootstrap \
+  oci://ghcr.io/stakater/public/charts/mto-extension-vault-enterprise-bootstrap \
   -n vault-config --create-namespace \
   --set parent.vaultServer=https://vault.example.com:8200
 ```
@@ -130,7 +130,7 @@ Values that matter (bootstrap chart):
 | `kubernetesAuth.path` / `.name` | `kubernetes` / `workloads` | The workload auth mount inside each tenant namespace: `kubernetes/workloads`. |
 | `kubernetesAuth.tokenReviewerServiceAccount` | `""` | Set only when Vault runs outside the cluster. |
 | `templateOperator.serviceAccountName` / `.namespace` | `template-operator-template-operator-v2` / `stakater-template-operator` | t-op-v2's identity, which the RBAC binds to. |
-| `tenantChart.registry` / `.version` | `oci://ghcr.io/stakater/charts` / chart version | Where t-op-v2 pulls the tenant chart. |
+| `tenantChart.registry` / `.version` | `oci://ghcr.io/stakater/public/charts` / chart version | Where t-op-v2 pulls the tenant chart. |
 | `parent.eso` | `enabled` | `"enabled"` or `"disabled"` — a string, not a boolean. |
 | `parent.token` | `{}` | Workload token `type`, `ttl`, `maxTTL`. **Integer seconds.** |
 | `parent.sso.*` | off | Human SSO (see below). `enabled=true` requires `issuerUrl`; the install fails without it. |
