@@ -1,4 +1,4 @@
-module github.com/stakater-ab/mto-extension-vault-enterprise
+module github.com/stakater/mto-extension-vault-enterprise
 
 go 1.26.5
 
