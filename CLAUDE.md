@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Helm charts that give every Stakater Multi-Tenant Operator (MTO) `Tenant` its own **Vault Enterprise** namespace. The charts only *describe* configuration — they emit [vault-config-operator](https://github.com/redhat-cop/vault-config-operator) (VCO) custom resources (`redhatcop.redhat.io/v1alpha1`), and VCO writes them to Vault.
 
-The sister project for OpenBao is `stakater-ab/mto-extension-openbao`; its charts are the reference design this repo ports. Transit and PKI are not ported yet.
+The sister project for OpenBao is `stakater/mto-extension-openbao`; its charts are the reference design this repo ports. Transit and PKI are not ported yet.
 
 | Chart | Installed | Role |
 |---|---|---|
