@@ -42,7 +42,7 @@ jobs:
       - name: Package and push charts
         run: make helm-release
         env:
-          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_USERNAME: stakater-user
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
 
       - name: Notify on failure
