@@ -32,7 +32,7 @@ jobs:
       # crd-validate runs the apiserver's admission pipeline through a Go helper.
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          go-version: "1.27"
       # No credential needed: the VCO CRDs are vendored in hack/vco-crds.
       - name: Lint, render tests, version pin, CRD schema check
         run: make all
