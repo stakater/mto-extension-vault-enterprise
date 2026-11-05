@@ -66,7 +66,7 @@ jobs:
     steps:
       # For pull_request_review the default ref is the DEFAULT BRANCH: an
       # approval-triggered run would test main and gate nothing.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || '' }}
 

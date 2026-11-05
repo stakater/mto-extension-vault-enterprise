@@ -27,7 +27,7 @@ jobs:
       HELM: ${{ github.workspace }}/bin/helm
       YQ_BIN: ${{ github.workspace }}/bin/yq
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v5
         with:

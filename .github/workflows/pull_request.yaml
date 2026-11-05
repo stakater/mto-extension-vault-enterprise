@@ -26,7 +26,7 @@ jobs:
       YQ_BIN: ${{ github.workspace }}/bin/yq
     steps:
       # Full history: version-bump-check diffs the PR against its base branch.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       # crd-validate runs the apiserver's admission pipeline through a Go helper.
