@@ -99,7 +99,7 @@ jobs:
       # docs. On a failure they are in the diagnostics below.
       - name: Upload screenshots
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: screenshots-${{ github.run_id }}
           path: ./e2e-logs/screenshots/
@@ -109,7 +109,7 @@ jobs:
       # e2e-kind writes these on any failure in the chain.
       - name: Upload diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-logs-${{ github.run_id }}
           path: ./e2e-logs/
